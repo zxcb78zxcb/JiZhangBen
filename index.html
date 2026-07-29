@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f5f0">
+<meta name="apple-mobile-web-app-title" content="记账本">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>记账本</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%238a6d3b'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%23fff' font-family='sans-serif'%3E%C2%A5%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brandrow">
+    <div class="brand">記帳本 <span>记账本</span></div>
+    <button class="syncchip off" id="syncChip" title="点一下立刻同步">○ 未开启同步</button>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="day">日</button>
+    <button class="tab" data-view="week">周</button>
+    <button class="tab" data-view="month">月</button>
+    <button class="tab" data-view="year">年</button>
+    <button class="tab" data-view="data">数据</button>
+  </nav>
+</header>
+
+<main id="app"></main>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
