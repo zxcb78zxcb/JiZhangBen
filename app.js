@@ -557,9 +557,22 @@ function syncCardHTML(lanBase){
   h += '<div class="rowhead" style="margin-top:6px"><div>Gist ID（留空＝第一次同步时自动创建）</div></div>';
   h += '<input class="tinp" id="gistId" type="text" placeholder="自动创建" value="'+esc(g.id)+'">';
   h += '<div class="btnrow" style="margin-top:8px"><button class="btn primary" id="gistSave">保存并同步</button>'
+     + (g.token ? '<button class="btn" id="gistScan">查找已有存档</button>' : '')
      + (g.id ? '<button class="btn" id="gistOpen">在 GitHub 打开</button>' : '') + '</div>';
-  h += '<div class="hint">令牌只存在这台设备，不会写进备份文件。生成方法见「上传GitHub教程.md / 同步设置教程.md」。<br>'
-     + '换到手机时：把同一个令牌和 Gist ID 填进去即可。</div>';
+  h += '<div class="hint">令牌只存在这台设备，不会写进备份文件。生成方法见「同步设置教程.md」。</div>';
+
+  /* 配对码：另一台设备粘贴这一串就行，不用分别抄令牌和 Gist ID */
+  if (g.token && g.id) {
+    h += '<div style="margin-top:12px;padding:10px;border:1px dashed var(--line);border-radius:10px;background:#fdfbf6">';
+    h += '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px">配对码</div>';
+    h += '<div class="hint" style="padding:0 0 6px">在另一台设备的下面那栏粘贴这串，就会连到<b>同一个</b>云端存档。</div>';
+    h += '<div style="display:flex;gap:6px"><input class="tinp" id="pairOut" readonly value="'+esc(pairCode())+'">'
+       + '<button class="btn" id="pairCopy">复制</button></div>';
+    h += '</div>';
+  }
+  h += '<div class="rowhead" style="margin-top:10px"><div>粘贴另一台设备的配对码</div></div>';
+  h += '<div style="display:flex;gap:6px"><input class="tinp" id="pairIn" type="text" placeholder="KKB1-…">'
+     + '<button class="btn primary" id="pairApply">连接</button></div>';
 
   const p = pendingCount();
   h += '<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:10px">';
@@ -608,6 +621,58 @@ function bindSyncUI(){
     renderData();
   };
   const gop = $('gistOpen'); if (gop) gop.onclick = () => window.open('https://gist.github.com/' + SC.gist.id, '_blank');
+
+  const pc = $('pairCopy'); if (pc) pc.onclick = async () => {
+    const el = $('pairOut');
+    try { await navigator.clipboard.writeText(el.value); toast('配对码已复制'); }
+    catch (e) { el.select(); try { document.execCommand('copy'); toast('配对码已复制'); } catch (x) { toast('请长按选中后复制'); } }
+  };
+  const pa = $('pairApply'); if (pa) pa.onclick = async () => {
+    const v = $('pairIn').value.trim();
+    if (!v) return alert('先粘贴另一台设备上的配对码。');
+    const o = parsePair(v);
+    if (!o) return alert('这串配对码看不懂，检查有没有复制全（开头是 KKB1-）。');
+    SC.gist.token = o.t; SC.gist.id = o.g; SC.gist.on = true;
+    lastErr = ''; failN = 0; nextTry = 0;
+    saveSC();
+    await syncNow('manual');
+    renderData();
+    toast('已连接到同一个云端存档');
+  };
+  const gsc = $('gistScan'); if (gsc) gsc.onclick = async () => {
+    try {
+      const list = await GIST.list();
+      if (!list.length) return alert('你的 GitHub 账号里还没有记账本存档。点「保存并同步」会新建一个。');
+      const cur = SC.gist.id;
+      const txt = list.map((x,i) => (i+1) + '. ' + x.id.slice(0,10) + '…　'
+        + (x.size/1024).toFixed(1) + ' KB　' + new Date(x.at).toLocaleString()
+        + (x.id === cur ? '　←当前用的' : '')).join('\n');
+      if (list.length === 1) return alert('找到 1 个存档：\n\n' + txt);
+      const big = list[0];
+      if (big.id === cur) return alert('找到 ' + list.length + ' 个存档：\n\n' + txt
+        + '\n\n当前用的就是内容最多的那个。多出来的可以去 gist.github.com 删掉。');
+      if (confirm('找到 ' + list.length + ' 个存档：\n\n' + txt
+        + '\n\n要改用内容最多的那个吗？\n（这台设备现有的记录会合并进去，不会丢）')) {
+        SC.gist.id = big.id; saveSC();
+        await syncNow('manual'); renderData(); toast('已切换并合并');
+      }
+    } catch (e) { alert('查不了：' + e.message + '\n检查一下令牌是否正确、有没有 gist 权限。'); }
+  };
+}
+
+/* ---- 配对码：把令牌和 Gist ID 打包成一串，方便在另一台设备上粘贴 ---- */
+function b64e(s){ return btoa(unescape(encodeURIComponent(s))); }
+function b64d(s){ return decodeURIComponent(escape(atob(s))); }
+function pairCode(){
+  try { return 'KKB1-' + b64e(JSON.stringify({ t:SC.gist.token, g:SC.gist.id })); }
+  catch (e) { return ''; }
+}
+function parsePair(v){
+  try {
+    const o = JSON.parse(b64d(String(v).trim().replace(/^KKB1-/, '')));
+    if (o && o.t && o.g) return o;
+  } catch (e) {}
+  return null;
 }
 function download(name, text, type){
   const b = new Blob([text], { type: type || 'application/json' });
@@ -810,7 +875,28 @@ const GIST = {
   name: '云同步',
   enabled(){ return SC.gist.on && !!SC.gist.token; },
   hd(){ return { 'Authorization':'Bearer ' + SC.gist.token, 'Accept':'application/vnd.github+json' }; },
+
+  /* 列出这个账号下所有「记账本」存档，内容多的排前面 */
+  async list(){
+    const r = await fetch('https://api.github.com/gists?per_page=100', { headers: this.hd(), cache:'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    return (j || [])
+      .filter(g => g.files && g.files[FILE])
+      .map(g => ({ id:g.id, size:(g.files[FILE].size || 0), at:g.updated_at }))
+      .sort((a,b) => (b.size - a.size) || (a.at < b.at ? 1 : -1));
+  },
+
+  /* Gist ID 空着的时候：先找找账号里有没有现成的存档，有就接上去，
+     没有才新建 —— 免得两台设备各建一个，谁也看不见谁。 */
   async create(){
+    let found = [];
+    try { found = await this.list(); } catch (e) {}
+    if (found.length) {
+      SC.gist.id = found[0].id; saveSC();
+      toast('找到已有的云端存档，已自动接上');
+      return SC.gist.id;
+    }
     const r = await fetch('https://api.github.com/gists', {
       method:'POST', headers: Object.assign({'Content-Type':'application/json'}, this.hd()),
       body: JSON.stringify({ description:'记账本数据（私密）', public:false,
@@ -819,6 +905,7 @@ const GIST = {
     if (!r.ok) throw new Error('创建失败 HTTP ' + r.status);
     const j = await r.json();
     SC.gist.id = j.id; saveSC();
+    toast('已新建云端存档');
     return j.id;
   },
   async pull(){
@@ -1135,7 +1222,7 @@ render();
 window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, render, CATS, ALLSUBS,
   monthSpend, monthIncome, monthVar, fixedSum, rangeSpend, rangeIncome, pct, weekStart, ymd,
   mergeDB, sig, emptyDB, dayScore, monScore, get SC(){return SC;},
-  pendingCount, refreshStatus, configured, syncNow, LAN, GIST,
+  pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();
