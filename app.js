@@ -1160,7 +1160,11 @@ function initOffline(){
   const okHost = location.protocol === 'https:' ||
                  location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   if (!okHost) return;
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const poke = () => { try { reg.update(); } catch (e) {} };   // 每次回到页面都去看看有没有新版
+    poke();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) poke(); });
+  }).catch(() => {});
   let told = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!told) { told = true; toast('已更新到新版本，下次打开生效'); }
@@ -1322,20 +1326,29 @@ function ensureOpbar(){
     + '</span>';
   document.body.appendChild(bar);
 
-  // 关键：按下时拦掉默认行为，输入框才不会失焦（一失焦键盘就收起来了）
-  const keep = e => e.preventDefault();
-  bar.addEventListener('mousedown', keep);
-  bar.addEventListener('touchstart', keep, { passive:false });
-
-  bar.addEventListener('click', e => {
-    const b = e.target.closest ? e.target.closest('.opk') : null;
+  /* 按下就直接干活，不等 click。
+     原因：为了不让输入框失焦（一失焦手机键盘就收起来），按下时必须 preventDefault()，
+     而在 iOS 上 preventDefault() 会把后续的 click 事件一起取消掉 ——
+     所以挂在 click 上的处理函数永远不会被调用。 */
+  function onPress(e){
+    if (e.cancelable) e.preventDefault();          // 保住焦点，键盘不收
+    const b = (e.target && e.target.closest) ? e.target.closest('.opk') : null;
     if (!b || !opbarTarget) return;
     const k = b.dataset.k;
     if (k === 'done')      { if (commitCalc(opbarTarget)) flashCalc(opbarTarget); }
     else if (k === 'back') { opbarBackspace(opbarTarget); }
     else                   { opbarInsert(opbarTarget, k); }
     updateOpbar();
-  });
+  }
+  // 只挂一条路，免得同一次点击被处理两遍
+  if (window.PointerEvent) {
+    bar.addEventListener('pointerdown', onPress);
+  } else {
+    bar.addEventListener('touchstart', onPress, { passive:false });
+    bar.addEventListener('mousedown', onPress);
+  }
+  bar.addEventListener('click', e => { if (e.cancelable) e.preventDefault(); });
+
   opbarEl = bar;
   return bar;
 }
