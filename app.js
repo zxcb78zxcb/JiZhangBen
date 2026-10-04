@@ -21,7 +21,7 @@ const CATS = [
 const INC = 'income';                       // 收入
 const ALLSUBS = [];
 CATS.forEach(c => c.subs.forEach(s => ALLSUBS.push(s[0])));
-const DEFAULT_FIXED = [ '房租', '通信费', '水电费', '会费' ];
+const DEFAULT_FIXED = [ '房租', '通信费', '水电费', '会费', '税费' ];
 
 /* ---------------- 数据层 ---------------- */
 const KEY = 'kakeibo_v1';
@@ -49,7 +49,7 @@ function saveNow() {
 }
 window.addEventListener('beforeunload', saveNow);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) saveNow(); else { syncNow('visible'); }
+  if (document.hidden) { commitFocused(); saveNow(); } else { syncNow('visible'); }
 });
 
 /* ---------------- 工具 ---------------- */
@@ -60,7 +60,84 @@ function parseYmd(s){ const p = s.split('-').map(Number); return new Date(p[0], 
 function addDays(d,n){ const x = new Date(d); x.setDate(x.getDate()+n); return x; }
 function weekStart(d){ const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - ((x.getDay()+6)%7)); return x; }
 function lastDay(y,m){ return new Date(y, m, 0).getDate(); }              // m: 1-12
-function num(v){ const n = parseFloat(v); return isFinite(n) ? n : 0; }
+/* 把「380+520」「100×3」「1,200」这类输入算成数字。
+   不是算式（纯数字、空、看不懂）就返回 null。 */
+function calcExpr(v){
+  let s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  s = s.replace(/[０-９．]/g, c => '0123456789.'.charAt('０１２３４５６７８９．'.indexOf(c)))
+       .replace(/[，,\s]/g, '')            // 千分位逗号、空格
+       .replace(/[×xX＊*]/g, '*')
+       .replace(/[÷/／]/g, '/')
+       .replace(/[＋+]/g, '+')
+       .replace(/[－—–ー-]/g, '-')
+       .replace(/[（(]/g, '(')
+       .replace(/[）)]/g, ')');
+  if (!/^[\d+\-*/.()]+$/.test(s)) return null;    // 混了别的字符，不碰
+  if (!/[+\-*/]/.test(s.slice(1))) return null;   // 没有运算符（开头的负号不算）→ 当普通数字
+  if (/[+\-*/(]$/.test(s)) return null;           // 还没输完，先别算
+  try {
+    const r = evalArith(s);
+    if (typeof r === 'number' && isFinite(r)) return Math.round(r * 100) / 100;
+  } catch (e) {}
+  return null;
+}
+
+/* 一个很小的算式解析器，只认数字和 + - * / ( )。
+   特意不用 eval / new Function：有些环境（带安全策略的页面）会直接禁掉它们，
+   而且也不该让输入框里的文字变成可执行代码。 */
+function evalArith(src){
+  let i = 0;
+  const s = String(src);
+
+  function expr(){                       // 加减
+    let v = term();
+    while (i < s.length && (s[i] === '+' || s[i] === '-')) {
+      const op = s[i++];
+      const r = term();
+      v = (op === '+') ? v + r : v - r;
+    }
+    return v;
+  }
+  function term(){                       // 乘除（优先级更高）
+    let v = factor();
+    while (i < s.length && (s[i] === '*' || s[i] === '/')) {
+      const op = s[i++];
+      const r = factor();
+      if (op === '*') v = v * r;
+      else { if (r === 0) throw new Error('除以 0'); v = v / r; }
+    }
+    return v;
+  }
+  function factor(){                     // 正负号、括号、数字
+    if (s[i] === '+') { i++; return factor(); }
+    if (s[i] === '-') { i++; return -factor(); }
+    if (s[i] === '(') {
+      i++;
+      const v = expr();
+      if (s[i] !== ')') throw new Error('括号没闭合');
+      i++;
+      return v;
+    }
+    const start = i;
+    while (i < s.length && (s[i] === '.' || (s[i] >= '0' && s[i] <= '9'))) i++;
+    if (i === start) throw new Error('这里该是个数字');
+    const n = parseFloat(s.slice(start, i));
+    if (!isFinite(n)) throw new Error('数字不对');
+    return n;
+  }
+
+  const v = expr();
+  if (i !== s.length) throw new Error('有多余的字符');   // 例如 "2(3)" "80+90)"
+  return v;
+}
+/* 求和时也走一遍算式解析：万一哪里漏了换算，合计也不会算错 */
+function num(v){
+  const c = calcExpr(v);
+  if (c !== null) return c;
+  const n = parseFloat(String(v == null ? '' : v).replace(/[，,\s]/g, ''));
+  return isFinite(n) ? n : 0;
+}
 function yen(n){ return '¥' + Math.round(n).toLocaleString('en-US'); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 const WD = ['周一','周二','周三','周四','周五','周六','周日'];
@@ -192,7 +269,7 @@ function groupHTML(ds, sid, label){
   if (label) h += '<div class="subname"><span>'+esc(label)+'</span><b data-sum="'+sid+'">'+yen(subSum(ds,sid))+'</b></div>';
   h += '<div class="rowhead"><div>项目名称</div><div class="r">金额</div><div></div></div>';
   h += '<div class="rowlist">' + rs.map((r,i)=>rowHTML(sid,i,r)).join('') + '</div>';
-  h += '<button class="addrow" data-add="'+sid+'">＋ 添加一行（也可在金额栏按回车）</button>';
+  h += '<button class="addrow" data-add="'+sid+'">＋ 添加一行（也可在「项目名称」栏按回车）</button>';
   h += '</div>';
   return h;
 }
@@ -352,14 +429,14 @@ function renderMonth(){
 
   /* --- 固定支出 --- */
   const fx = fixedRows(m);
-  h += '<section class="card"><h3>每月固定支出<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">房租 / 通信费 / 水电费 / 会费…</span></h3><div class="body">';
+  h += '<section class="card"><h3>每月固定支出<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">房租 / 通信费 / 水电费 / 会费 / 税费…</span></h3><div class="body">';
   h += '<div class="rowhead"><div>项目名称</div><div class="r">金额</div><div></div></div><div class="fixlist">';
   h += (fx.length?fx:[{n:'',a:''}]).map((r2,i)=>
         '<div class="row" data-fix="'+i+'">'
         + '<input class="fn" type="text" placeholder="项目名称" value="'+esc(r2.n)+'">'
         + '<input class="fa" type="text" inputmode="decimal" placeholder="0" value="'+esc(r2.a)+'">'
         + '<button class="del" data-delfix="'+i+'" title="删除这一行">×</button></div>').join('');
-  h += '</div><button class="addrow" data-addfix="1">＋ 添加固定支出（也可在金额栏按回车）</button>';
+  h += '</div><button class="addrow" data-addfix="1">＋ 添加固定支出（也可在「项目名称」栏按回车）</button>';
   h += '<div class="cattotal"><span>固定支出 合计</span><b id="fixTotal">'+yen(fixS)+'</b></div>';
   h += '<div class="hint">上月固定支出 '+yen(pFix)+'　'+spanPct(pct(fixS,pFix))+'</div>';
   h += '</div></section>';
@@ -503,8 +580,10 @@ function renderData(){
   +   '<div class="btnrow"><button class="btn danger" id="clrBtn">清空全部数据</button></div>'
   + '</div></section>'
   + '<section class="card"><h3>使用说明</h3><div class="body" style="font-size:13.5px;line-height:1.8;color:var(--ink-soft)">'
-  +   '· 在金额栏按 <b>回车</b> 自动新增一行；行尾 <b>×</b> 删除该行。<br>'
-  +   '· 金额栏支持算式，例如输入 <b>380+520</b>，离开输入框后自动算成 900。<br>'
+  +   '· 在<b>「项目名称」</b>栏按 <b>回车</b> → 新增一行；行尾 <b>×</b> 删除该行。<br>'
+  +   '· 在<b>「金额」</b>栏按 <b>回车</b> → 把这一格的算式算出来，光标留在原地，不会跳走。<br>'
+  +   '　 比如输入 <b>80+90</b>，下面会显示「= ¥170」，按回车就变成 170。<br>'
+  +   '　 支持 <b>＋ － × ÷</b> 和括号，也认全角符号和千分位逗号（<b>1,200+800</b>）。<br>'
   +   '· 支出显示黑字，收入显示蓝字。<br>'
   +   '· 周＝周一~周日；月度总结里可填房租等固定支出，并自动和上月对比。<br>'
   +   '· 数据自动保存，无需点保存按钮。'
@@ -741,7 +820,25 @@ function loadSC(){
   catch(e){}
   return defSC();
 }
-function defSC(){ return { lan:{ on:true, url:'' }, gist:{ on:false, token:'', id:'' }, last:0 }; }
+function defSC(){ return { lan:{ on:true, url:'' }, gist:{ on:false, token:'', id:'' }, last:0, migTax:0 }; }
+
+/* 「税费」是后来加的固定支出项。以前就建好的月份里没有这一行，
+   在本机补一次（只补一次，之后你删掉它就不会再冒出来）。 */
+function migrateTax(){
+  if (SC.migTax) return;
+  SC.migTax = 1; saveSC();
+  let changed = false;
+  for (const m in DB.months) {
+    const o = DB.months[m];
+    if (!o.fixed) o.fixed = [];
+    if (o.fixed.some(r => String(r.n || '').trim() === '税费')) continue;
+    o.fixed.push({ n:'税费', a:'' });
+    const t = nowTs();
+    o._t = t; o.t = o.t || {}; o.t.fixed = t;      // 盖时间戳，好让它同步到别的设备
+    changed = true;
+  }
+  if (changed) { saveNow(); schedSync(); }
+}
 function saveSC(){ try { localStorage.setItem(SKEY, JSON.stringify(SC)); } catch(e){} }
 
 /* ---- 合并 ---- */
@@ -1086,6 +1183,7 @@ function render(){
 }
 document.getElementById('tabs').addEventListener('click', e => {
   const b = e.target.closest('.tab'); if (!b) return;
+  commitFocused();
   pruneDay(ymd(cur)); saveNow();
   view = b.dataset.view;
   if (view === 'month') curM = ymOf(cur);
@@ -1098,6 +1196,7 @@ app.addEventListener('click', e => {
   const nb = e.target.closest('[data-nav]');
   if (nb) {
     const k = nb.dataset.nav;
+    commitFocused();
     pruneDay(ymd(cur));
     if (k === 'd-1') cur = addDays(cur,-1);
     else if (k === 'd+1') cur = addDays(cur,1);
@@ -1153,46 +1252,95 @@ app.addEventListener('input', e => {
     const o = monthObj(curM,true), i = +row.dataset.fix;
     while (o.fixed.length <= i) o.fixed.push({n:'',a:''});
     o.fixed[i][t.classList.contains('fn') ? 'n' : 'a'] = t.value;
-    touchMonth(curM,'fixed'); save(); refreshMonthFixed(); return;
+    touchMonth(curM,'fixed'); save(); refreshMonthFixed();
+    if (t.classList.contains('fa')) showCalcHint(t);
+    return;
   }
   setCell(ymd(cur), row.dataset.sid, +row.dataset.i, t.classList.contains('rn') ? 'n' : 'a', t.value);
   refreshDayTotals();
+  if (t.classList.contains('ra')) showCalcHint(t);
 });
 
-/* 金额栏算式：380+520 → 900 */
-app.addEventListener('change', e => {
-  const t = e.target;
-  if (!t.classList.contains('ra') && !t.classList.contains('fa')) return;
-  const v = String(t.value).trim();
-  if (!v || !/[+\-*/]/.test(v) || !/^[\d+\-*/.()\s]+$/.test(v)) return;
-  try {
-    const r = Function('"use strict";return (' + v + ')')();
-    if (isFinite(r)) { t.value = Math.round(r*100)/100; t.dispatchEvent(new Event('input', {bubbles:true})); }
-  } catch (x) {}
-});
+/* ---- 金额栏算式：380+520 → 900 ---- */
+function isAmountInput(el){
+  return !!(el && el.classList && (el.classList.contains('ra') || el.classList.contains('fa')));
+}
+/* 把输入框里的算式换成结果并写回数据 */
+function commitCalc(el){
+  if (!isAmountInput(el)) return false;
+  const r = calcExpr(el.value);
+  if (r === null) return false;
+  el.value = r;
+  el.dispatchEvent(new Event('input', { bubbles:true }));
+  return true;
+}
+function commitFocused(){ const ok = commitCalc(document.activeElement); hideCalcHint(); return ok; }
+
+/* 边打边显示「= 900」，让人知道这里能算 */
+function showCalcHint(el){
+  hideCalcHint();
+  const r = calcExpr(el.value);
+  if (r === null) return;
+  const row = el.closest('.row');
+  if (!row || !row.parentNode) return;
+  const d = document.createElement('div');
+  d.className = 'calchint'; d.id = 'calcHint';
+  d.textContent = '= ' + yen(r) + '（点别处或按回车自动填入）';
+  row.parentNode.insertBefore(d, row.nextSibling);
+}
+function hideCalcHint(){
+  const d = document.getElementById('calcHint');
+  if (d && d.parentNode) d.parentNode.removeChild(d);
+}
+
+app.addEventListener('change', e => { commitCalc(e.target); hideCalcHint(); });
+app.addEventListener('focusout', e => { if (isAmountInput(e.target)) hideCalcHint(); });
 
 /* 回车 = 新增一行 */
 app.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   const t = e.target;
-  if (t.classList.contains('ra') || t.classList.contains('rn')) {
-    e.preventDefault();
-    const row = t.closest('.row'), sid = row.dataset.sid, i = +row.dataset.i;
-    const len = Math.max(1, dayRows(ymd(cur), sid).length);
-    if (i < len - 1) { focusRow(sid, i+1); return; }
+  const act = enterAction(t);
+  if (act === 'none') return;
+  e.preventDefault();
+
+  /* 金额栏回车 = 只算这一格，光标留在原地，不加行、不跳走 */
+  if (act === 'calc') {
+    const done = commitCalc(t);
+    hideCalcHint();
+    if (done) flashCalc(t);
+    else t.blur();                        // 不是算式就收起键盘，当作「填好了」
+    return;
+  }
+
+  /* 项目名称栏回车 = 新增一行，光标落到新行的项目名称 */
+  if (t.classList.contains('rn')) {
+    const sid = t.closest('.row').dataset.sid;
     const ni = addRow(ymd(cur), sid);
     renderDay(); focusRow(sid, ni);
-  } else if (t.classList.contains('fa') || t.classList.contains('fn')) {
-    e.preventDefault();
-    const o = monthObj(curM,true), i = +t.closest('.row').dataset.fix;
-    if (i < o.fixed.length - 1) {
-      const el = document.querySelector('.fixlist .row[data-fix="'+(i+1)+'"] .fn'); if (el) el.focus();
-      return;
-    }
-    o.fixed.push({n:'',a:''}); touchMonth(curM,'fixed'); save(); renderMonth();
-    const el = document.querySelector('.fixlist .row[data-fix="'+(i+1)+'"] .fn'); if (el) { el.focus(); }
+  } else {                                 // .fn：月度固定支出
+    const o = monthObj(curM, true);
+    o.fixed.push({ n:'', a:'' }); touchMonth(curM,'fixed'); save(); renderMonth();
+    const el = document.querySelector('.fixlist .row[data-fix="'+(o.fixed.length-1)+'"] .fn');
+    if (el) el.focus();
   }
 });
+
+/* 回车在哪一栏按下，该干什么 */
+function enterAction(el){
+  if (!el || !el.classList) return 'none';
+  if (el.classList.contains('ra') || el.classList.contains('fa')) return 'calc';
+  if (el.classList.contains('rn') || el.classList.contains('fn')) return 'addrow';
+  return 'none';
+}
+/* 算完闪一下，让人看见「确实算了」 */
+function flashCalc(el){
+  if (!el.classList) return;
+  el.classList.remove('calcdone');
+  void el.offsetWidth;                     // 强制重排，动画才能重放
+  el.classList.add('calcdone');
+  setTimeout(() => { if (el.classList) el.classList.remove('calcdone'); }, 800);
+}
 function focusRow(sid, i){
   const el = document.querySelector('.row[data-sid="'+sid+'"][data-i="'+i+'"] .rn');
   if (el) { el.focus(); try { el.scrollIntoView({block:'center', behavior:'smooth'}); } catch(x){} }
@@ -1206,6 +1354,7 @@ function refreshMonthFixed(){
 }
 
 /* 启动 */
+migrateTax();
 render();
 (function initSync(){
   const chip = document.getElementById('syncChip');
@@ -1223,6 +1372,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   monthSpend, monthIncome, monthVar, fixedSum, rangeSpend, rangeIncome, pct, weekStart, ymd,
   mergeDB, sig, emptyDB, dayScore, monScore, get SC(){return SC;},
   pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
+  calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();
