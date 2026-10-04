@@ -2,7 +2,7 @@
    把页面本体缓存下来，飞机上 / 没信号的地方也能打开记账。
    改了 index.html / style.css / app.js 之后，记得把下面的 VERSION 加一，
    否则手机上还会用旧的缓存。 */
-const VERSION = 'kakeibo-v6';
+const VERSION = 'kakeibo-v7';
 
 const ASSETS = [
   './',

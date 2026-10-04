@@ -654,13 +654,26 @@ function syncCardHTML(lanBase){
   h += '<div style="display:flex;gap:6px"><input class="tinp" id="pairIn" type="text" placeholder="KKB1-…">'
      + '<button class="btn primary" id="pairApply">连接</button></div>';
 
+  h += '<div class="btnrow" style="margin-top:10px"><button class="btn" id="gistMergeAll">合并全部云端存档</button></div>';
+  h += '<div class="hint">云端有多个存档时（比如以前不小心建了好几个），这个会把它们全部读出来合成一份。</div>';
+
   const p = pendingCount();
+  const localDays = Object.keys(DB.days).length;
+  const cd = SC.cloudDays;
+  const gap = (cd != null) ? (localDays - cd) : null;
   h += '<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:10px">';
+  h += '<div class="kv"><span>本机记录</span><b>'+localDays+' 天</b></div>';
+  h += '<div class="kv"><span>云端记录</span><b style="color:'
+     + (gap === null ? 'var(--ink-soft)' : (gap > 0 ? 'var(--up)' : 'var(--down)')) + '">'
+     + (cd == null ? '还没核对过' : cd + ' 天' + (gap > 0 ? '（少 ' + gap + ' 天！）' : '（一致 ✓）')) + '</b></div>';
+  h += '<div class="kv"><span>云端核对时间</span><b>'+(SC.cloudAt?new Date(SC.cloudAt).toLocaleString():'—')+'</b></div>';
   h += '<div class="kv"><span>当前网络</span><b>'+(online()?'在线':'离线（照常记账，有网自动补传）')+'</b></div>';
   h += '<div class="kv"><span>待同步改动</span><b>'+(p?p+' 项':'无')+'</b></div>';
-  h += '<div class="kv"><span>上次同步</span><b>'+(SC.last?new Date(SC.last).toLocaleString():'还没同步过')+'</b></div>';
+  h += '<div class="kv"><span>上次成功同步</span><b>'+(SC.last?new Date(SC.last).toLocaleString():'<span style="color:var(--up)">还没成功过</span>')+'</b></div>';
+  h += '<div class="kv"><span>上次导出备份</span><b>'+(SC.lastExport?new Date(SC.lastExport).toLocaleString():'<span style="color:var(--up)">从未</span>')+'</b></div>';
   h += '<div class="kv"><span>离线可用</span><b>'+(offlineReady()?'✓ 已缓存，没网也能打开':'未启用（把网址装到主屏后生效）')+'</b></div>';
   h += '</div>';
+  h += '<div class="hint" style="margin-top:8px">「云端记录」是每次同步后<b>真的把数据拉回来数过</b>的，不是推送没报错就算数。</div>';
   h += '</div></section>';
 
   h += '<section class="card"><h3>旅行时怎么用</h3><div class="body" style="font-size:13.5px;line-height:1.8;color:var(--ink-soft)">'
@@ -701,6 +714,31 @@ function bindSyncUI(){
     renderData();
   };
   const gop = $('gistOpen'); if (gop) gop.onclick = () => window.open('https://gist.github.com/' + SC.gist.id, '_blank');
+
+  const gma = $('gistMergeAll'); if (gma) gma.onclick = async () => {
+    if (!SC.gist.token) return alert('先填令牌。');
+    gma.disabled = true; gma.textContent = '正在合并…';
+    try {
+      const list = await GIST.list();
+      if (!list.length) { alert('你的账号里还没有任何记账本存档。'); return; }
+      let merged = DB, read = 0, failed = 0;
+      for (const g of list) {
+        try { merged = mergeDB(merged, await GIST.pullById(g.id)); read++; }
+        catch (e) { failed++; }
+      }
+      DB = merged; saveNow();
+      SC.gist.id = list[0].id; SC.gist.on = true; saveSC();   // 以内容最多的那个为主存档
+      lastErr = ''; failN = 0; nextTry = 0;
+      await syncNow('manual');
+      render();
+      alert('合并完成。\n\n读取了 ' + read + ' 个存档'
+        + (failed ? '（' + failed + ' 个读不到）' : '')
+        + '\n现在一共 ' + Object.keys(DB.days).length + ' 天的记录。'
+        + '\n\n多余的空存档可以去 gist.github.com 删掉。');
+    } catch (e) {
+      alert('合并失败：' + e.message);
+    } finally { gma.disabled = false; gma.textContent = '合并全部云端存档'; }
+  };
 
   const pc = $('pairCopy'); if (pc) pc.onclick = async () => {
     const el = $('pairOut');
@@ -763,6 +801,8 @@ function download(name, text, type){
 function doExport(){
   saveNow();
   download('记账本备份_' + ymd(new Date()) + '.json', JSON.stringify(DB, null, 1));
+  SC.lastExport = nowTs(); saveSC();
+  refreshStatus();
   toast('已导出备份文件');
 }
 function doCSV(){
@@ -821,7 +861,10 @@ function loadSC(){
   catch(e){}
   return defSC();
 }
-function defSC(){ return { lan:{ on:true, url:'' }, gist:{ on:false, token:'', id:'' }, last:0, migTax:0 }; }
+function defSC(){
+  return { lan:{ on:true, url:'' }, gist:{ on:false, token:'', id:'' },
+           last:0, migTax:0, lastExport:0, cloudDays:null, cloudMonths:null, cloudAt:0 };
+}
 
 /* 「税费」是后来加的固定支出项。以前就建好的月份里没有这一行，
    在本机补一次（只补一次，之后你删掉它就不会再冒出来）。 */
@@ -950,7 +993,10 @@ const LAN = {
   name: '局域网',
   base(){
     if (SC.lan.url) return SC.lan.url.replace(/\/+$/, '');
-    if (location.protocol === 'http:' || location.protocol === 'https:') return location.origin;
+    // 只有页面本身就是局域网服务器发出来的（http，不是 https）才自动用当前地址。
+    // 以前这里把 https 也算进来，于是在 GitHub Pages 上「局域网通道」永远算「已配置」，
+    // 哪怕云同步根本没开，状态灯也不报警——这就是丢数据那次的根源。
+    if (location.protocol === 'http:') return location.origin;
     return '';
   },
   enabled(){ return SC.lan.on && !!this.base(); },
@@ -1006,11 +1052,10 @@ const GIST = {
     toast('已新建云端存档');
     return j.id;
   },
-  async pull(){
-    if (!SC.gist.id) { await this.create(); return emptyDB(); }
-    const r = await fetch('https://api.github.com/gists/' + SC.gist.id + '?t=' + nowTs(),
+  async pullById(id){
+    const r = await fetch('https://api.github.com/gists/' + id + '?t=' + nowTs(),
       { headers: this.hd(), cache:'no-store' });
-    if (r.status === 404) { SC.gist.id = ''; saveSC(); throw new Error('找不到这个 Gist，已重置'); }
+    if (r.status === 404) throw new Error('找不到这个存档（404）');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const f = j.files && j.files[FILE];
@@ -1018,6 +1063,14 @@ const GIST = {
     let txt = f.content;
     if (f.truncated && f.raw_url) txt = await (await fetch(f.raw_url)).text();
     try { return JSON.parse(txt); } catch(e){ return emptyDB(); }
+  },
+  async pull(){
+    if (!SC.gist.id) { await this.create(); return emptyDB(); }
+    try { return await this.pullById(SC.gist.id); }
+    catch (e) {
+      if (/404/.test(e.message)) { SC.gist.id = ''; saveSC(); throw new Error('找不到这个存档，已重置'); }
+      throw e;
+    }
   },
   async push(db){
     if (!SC.gist.id) await this.create();
@@ -1072,13 +1125,16 @@ function setStatus(state, msg){
   el.textContent = msg;
 }
 function refreshStatus(){
+  refreshWarn();
   if (syncing) return setStatus('busy', '⟳ 同步中');
-  if (!configured().length) return setStatus('off', '○ 未开启同步');
+  if (!GIST.enabled() && !configured().length) return setStatus('err', '⚠ 没开云同步·只存本机');
+  if (!configured().length) return setStatus('err', '⚠ 没开云同步·只存本机');
   const p = pendingCount();
   if (!online()) return setStatus('off', p ? '✈ 离线 · ' + p + ' 项待同步' : '✈ 离线 · 已存本机');
   if (lastErr)   return setStatus('err', '⚠ ' + lastErr);
   if (p)         return setStatus('busy', '● ' + p + ' 项待同步');
-  return setStatus('ok', '✓ 已同步 ' + hhmm(new Date(SC.last || nowTs())));
+  if (!SC.last)  return setStatus('err', '⚠ 还没成功传过云端');
+  return setStatus('ok', '✓ 已同步 ' + hhmm(new Date(SC.last)));
 }
 function schedSync(){
   if (!configured().length) return;
@@ -1090,6 +1146,15 @@ function isTyping(){
   const a = document.activeElement;
   return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
 }
+/* 本机有、云端没有的条数。这是「到底传上去没有」的唯一判据 */
+function cloudGap(local, remote){
+  let n = 0;
+  remote = remote || emptyDB();
+  for (const k in (local.days || {}))   if (!(remote.days || {})[k])   n++;
+  for (const k in (local.months || {})) if (!(remote.months || {})[k]) n++;
+  return n;
+}
+
 async function syncNow(reason){
   if (!configured().length) { refreshStatus(); return; }
   if (syncing) return;
@@ -1102,8 +1167,7 @@ async function syncNow(reason){
   try {
     const chs = await activeChannels();
     if (!chs.length) {
-      // 配了局域网但服务器没开、又没配云同步：不算错，等着就是
-      lastErr = GIST.enabled() ? '' : '';
+      lastErr = GIST.enabled() ? '连不上同步服务器' : '';
       syncing = false; refreshStatus(); return;
     }
     const got = [];
@@ -1123,9 +1187,26 @@ async function syncNow(reason){
         try { await g.c.push(merged); } catch (e) { errs.push(g.c.name + '：' + e.message); }
       }
     }
-    if (errs.length && !got.length) {
-      lastErr = errs[0]; failN++; nextTry = nowTs() + Math.min(20000 * Math.pow(2, failN), 300000);
-    } else if (errs.length) {
+
+    /* 关键一步：推完再拉回来数一遍，确认云端真的收到了。
+       以前是「推送没报错就当成功」，所以才会出现「显示已同步、云端其实是空的」。
+       现在只有复查通过，才敢把状态标成已同步。 */
+    if (!errs.length) {
+      for (const g of got) {
+        try {
+          const back = await g.c.pull();
+          const gap = cloudGap(merged, back);
+          if (gap > 0) errs.push(g.c.name + '：云端少了 ' + gap + ' 条，还在重试');
+          else if (g.c === GIST) {
+            SC.cloudDays   = Object.keys(back.days || {}).length;
+            SC.cloudMonths = Object.keys(back.months || {}).length;
+            SC.cloudAt     = nowTs();
+          }
+        } catch (e) { errs.push(g.c.name + '：复查失败 ' + e.message); }
+      }
+    }
+
+    if (errs.length) {
       lastErr = errs[0]; failN++; nextTry = nowTs() + Math.min(20000 * Math.pow(2, failN), 300000);
     } else {
       lastErr = ''; failN = 0; nextTry = 0;
@@ -1177,6 +1258,53 @@ function offlineReady(){
 /* =====================================================================
    渲染调度 + 事件
    ===================================================================== */
+/* ---------- 常驻警告条：只要数据还没安全落到云端，就一直挂在最上面 ---------- */
+function warnItems(){
+  const out = [];
+  if (!GIST.enabled()) {
+    out.push({ lv:'bad', html:'<b>云同步没开</b>——记录只存在这台设备里。'
+      + '清浏览器数据、或者删掉主屏图标，就会全部消失。'
+      + '<button class="wbtn" data-go="data">去开启</button>' });
+  } else {
+    const p = pendingCount();
+    if (p) out.push({ lv:'warn', html:'<b>' + p + ' 项还没传到云端</b>'
+      + (online() ? '，正在重试…' : '（现在离线，一有网会自动补传）')
+      + '<button class="wbtn" data-sync="1">立刻同步</button>' });
+    if (lastErr) out.push({ lv:'bad', html:'<b>同步出错</b>：' + esc(lastErr)
+      + '<button class="wbtn" data-sync="1">重试</button>' });
+    const localDays = Object.keys(DB.days).length;
+    if (SC.cloudDays != null && localDays - SC.cloudDays > 0) {
+      out.push({ lv:'bad', html:'<b>云端比本机少 ' + (localDays - SC.cloudDays) + ' 天</b>'
+        + '<button class="wbtn" data-sync="1">立刻同步</button>' });
+    }
+  }
+  const days = SC.lastExport ? Math.floor((nowTs() - SC.lastExport) / 864e5) : null;
+  if (Object.keys(DB.days).length && (days === null || days >= 7)) {
+    out.push({ lv:'warn', html:(days === null ? '<b>还没导出过备份</b>' : '<b>已经 ' + days + ' 天没导出备份</b>')
+      + '，建议存一份文件在手机里。<button class="wbtn" data-export="1">现在导出</button>' });
+  }
+  return out;
+}
+function warnBody(){
+  return warnItems().map(i => '<div class="warnbar ' + i.lv + '">⚠ ' + i.html + '</div>').join('');
+}
+function warnHTML(){ return '<div id="warnzone">' + warnBody() + '</div>'; }
+function refreshWarn(){
+  const z = document.getElementById('warnzone');
+  if (!z) return;
+  const html = warnBody();
+  if (z.innerHTML !== html) { z.innerHTML = html; bindWarn(); }
+}
+function bindWarn(){
+  document.querySelectorAll('.warnbar .wbtn').forEach(b => {
+    b.onclick = () => {
+      if (b.dataset.sync) { syncNow('manual'); toast('正在同步…'); }
+      else if (b.dataset.export) { doExport(); }
+      else if (b.dataset.go === 'data') { view = 'data'; render(); }
+    };
+  });
+}
+
 function render(){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
   if (view === 'day')       renderDay();
@@ -1184,6 +1312,8 @@ function render(){
   else if (view === 'month')renderMonth();
   else if (view === 'year') renderYear();
   else                      renderData();
+  app.insertAdjacentHTML('afterbegin', warnHTML());
+  bindWarn();
   window.scrollTo(0, 0);
 }
 document.getElementById('tabs').addEventListener('click', e => {
@@ -1497,6 +1627,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   mergeDB, sig, emptyDB, dayScore, monScore, get SC(){return SC;},
   pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
   calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
+  cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();
