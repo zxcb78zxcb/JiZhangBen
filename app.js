@@ -70,7 +70,7 @@ function calcExpr(v){
        .replace(/[×xX＊*]/g, '*')
        .replace(/[÷/／]/g, '/')
        .replace(/[＋+]/g, '+')
-       .replace(/[－—–ー-]/g, '-')
+       .replace(/[－—–ー−-]/g, '-')          // 含 U+2212 真减号
        .replace(/[（(]/g, '(')
        .replace(/[）)]/g, ')');
   if (!/^[\d+\-*/.()]+$/.test(s)) return null;    // 混了别的字符，不碰
@@ -584,6 +584,7 @@ function renderData(){
   +   '· 在<b>「金额」</b>栏按 <b>回车</b> → 把这一格的算式算出来，光标留在原地，不会跳走。<br>'
   +   '　 比如输入 <b>80+90</b>，下面会显示「= ¥170」，按回车就变成 170。<br>'
   +   '　 支持 <b>＋ － × ÷</b> 和括号，也认全角符号和千分位逗号（<b>1,200+800</b>）。<br>'
+  +   '　 <b>手机上</b>数字键盘没有这些符号，所以点进金额栏时键盘上方会浮出一条符号按钮。<br>'
   +   '· 支出显示黑字，收入显示蓝字。<br>'
   +   '· 周＝周一~周日；月度总结里可填房租等固定支出，并自动和上月对比。<br>'
   +   '· 数据自动保存，无需点保存按钮。'
@@ -1274,11 +1275,12 @@ function commitCalc(el){
   el.dispatchEvent(new Event('input', { bubbles:true }));
   return true;
 }
-function commitFocused(){ const ok = commitCalc(document.activeElement); hideCalcHint(); return ok; }
+function commitFocused(){ const ok = commitCalc(document.activeElement); hideCalcHint(); hideOpbar(); return ok; }
 
 /* 边打边显示「= 900」，让人知道这里能算 */
 function showCalcHint(el){
   hideCalcHint();
+  if (isTouch()) { updateOpbar(); return; }     // 手机上结果显示在符号条里
   const r = calcExpr(el.value);
   if (r === null) return;
   const row = el.closest('.row');
@@ -1294,7 +1296,116 @@ function hideCalcHint(){
 }
 
 app.addEventListener('change', e => { commitCalc(e.target); hideCalcHint(); });
-app.addEventListener('focusout', e => { if (isAmountInput(e.target)) hideCalcHint(); });
+
+/* =====================================================================
+   手机符号条
+   手机的数字键盘没有 + － × ÷，所以金额栏一聚焦就在键盘上方浮一条按钮。
+   ===================================================================== */
+function isTouch(){
+  if (typeof window !== 'undefined' && window.__forceTouch != null) return !!window.__forceTouch;  // 测试用
+  try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
+  catch (e) { return false; }
+}
+const OPKEYS = [ ['+','＋'], ['-','－'], ['×','×'], ['÷','÷'] ];
+let opbarEl = null, opbarTarget = null, opbarHideTimer = null;
+
+function ensureOpbar(){
+  if (opbarEl) return opbarEl;
+  const bar = document.createElement('div');
+  bar.id = 'opbar'; bar.className = 'opbar';
+  bar.innerHTML =
+      '<span class="opres" id="opRes"></span>'
+    + '<span class="opbtns">'
+    +   OPKEYS.map(k => '<button type="button" class="opk" data-k="'+k[0]+'">'+k[1]+'</button>').join('')
+    +   '<button type="button" class="opk" data-k="back">⌫</button>'
+    +   '<button type="button" class="opk ok" data-k="done">＝ 算出来</button>'
+    + '</span>';
+  document.body.appendChild(bar);
+
+  // 关键：按下时拦掉默认行为，输入框才不会失焦（一失焦键盘就收起来了）
+  const keep = e => e.preventDefault();
+  bar.addEventListener('mousedown', keep);
+  bar.addEventListener('touchstart', keep, { passive:false });
+
+  bar.addEventListener('click', e => {
+    const b = e.target.closest ? e.target.closest('.opk') : null;
+    if (!b || !opbarTarget) return;
+    const k = b.dataset.k;
+    if (k === 'done')      { if (commitCalc(opbarTarget)) flashCalc(opbarTarget); }
+    else if (k === 'back') { opbarBackspace(opbarTarget); }
+    else                   { opbarInsert(opbarTarget, k); }
+    updateOpbar();
+  });
+  opbarEl = bar;
+  return bar;
+}
+function opbarInsert(el, txt){
+  const s = el.selectionStart, e = el.selectionEnd;
+  if (typeof s === 'number' && typeof e === 'number') {
+    el.value = el.value.slice(0, s) + txt + el.value.slice(e);
+    const p = s + txt.length;
+    try { el.setSelectionRange(p, p); } catch (x) {}
+  } else el.value += txt;
+  el.dispatchEvent(new Event('input', { bubbles:true }));
+  el.focus();
+}
+function opbarBackspace(el){
+  let s = el.selectionStart; const e = el.selectionEnd;
+  if (typeof s !== 'number' || typeof e !== 'number') {
+    el.value = el.value.slice(0, -1);
+  } else {
+    if (s === e) { if (s === 0) return; s -= 1; }
+    el.value = el.value.slice(0, s) + el.value.slice(e);
+    try { el.setSelectionRange(s, s); } catch (x) {}
+  }
+  el.dispatchEvent(new Event('input', { bubbles:true }));
+  el.focus();
+}
+function updateOpbar(){
+  const res = document.getElementById('opRes');
+  if (!res) return;
+  const r = opbarTarget ? calcExpr(opbarTarget.value) : null;
+  res.textContent = r === null ? '' : '= ' + yen(r);
+}
+/* 把符号条顶到键盘上方 */
+function positionOpbar(){
+  if (!opbarEl) return;
+  let gap = 0;
+  const vv = window.visualViewport;
+  if (vv) gap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+  opbarEl.style.bottom = gap + 'px';
+}
+function showOpbar(el){
+  if (!isTouch()) return;
+  clearTimeout(opbarHideTimer);
+  opbarTarget = el;
+  const bar = ensureOpbar();
+  bar.classList.add('show');
+  document.body.classList.add('opbar-on');
+  positionOpbar(); updateOpbar();
+}
+function hideOpbar(){
+  clearTimeout(opbarHideTimer);
+  opbarTarget = null;
+  if (opbarEl) opbarEl.classList.remove('show');
+  if (document.body && document.body.classList) document.body.classList.remove('opbar-on');
+}
+if (window.visualViewport && window.visualViewport.addEventListener) {
+  window.visualViewport.addEventListener('resize', positionOpbar);
+  window.visualViewport.addEventListener('scroll', positionOpbar);
+}
+
+app.addEventListener('focusin', e => {
+  if (isAmountInput(e.target)) showOpbar(e.target);
+  else if (!isTouch()) return;
+  else hideOpbar();
+});
+app.addEventListener('focusout', e => {
+  if (!isAmountInput(e.target)) return;
+  hideCalcHint();
+  clearTimeout(opbarHideTimer);
+  opbarHideTimer = setTimeout(hideOpbar, 150);   // 留点时间给符号条上的点击
+});
 
 /* 回车 = 新增一行 */
 app.addEventListener('keydown', e => {
@@ -1307,7 +1418,7 @@ app.addEventListener('keydown', e => {
   /* 金额栏回车 = 只算这一格，光标留在原地，不加行、不跳走 */
   if (act === 'calc') {
     const done = commitCalc(t);
-    hideCalcHint();
+    hideCalcHint(); updateOpbar();
     if (done) flashCalc(t);
     else t.blur();                        // 不是算式就收起键盘，当作「填好了」
     return;
@@ -1372,7 +1483,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   monthSpend, monthIncome, monthVar, fixedSum, rangeSpend, rangeIncome, pct, weekStart, ymd,
   mergeDB, sig, emptyDB, dayScore, monScore, get SC(){return SC;},
   pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
-  calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction,
+  calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();

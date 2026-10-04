@@ -161,6 +161,52 @@ main{max-width:940px;margin:0 auto;padding:12px 12px 40px;}
 .cattotal b{font-size:17px;font-variant-numeric:tabular-nums;}
 .income .cattotal b{color:var(--blue);}
 .hint{font-size:11.5px;color:#a49e91;padding:2px 2px 6px;}
+/* ---------- 手机符号条（数字键盘上没有 + － × ÷） ---------- */
+.opbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:200;
+  display:none;align-items:center;gap:8px;
+  padding:7px 10px calc(7px + env(safe-area-inset-bottom,0px));
+  background:rgba(250,248,243,.98);
+  border-top:1px solid var(--line);
+  -webkit-backdrop-filter:saturate(180%) blur(10px);
+  backdrop-filter:saturate(180%) blur(10px);
+  box-shadow:0 -2px 12px rgba(0,0,0,.07);
+}
+.opbar.show{display:flex;}
+/* 结果文字可以被挤窄（挤不下就省略号），按钮永远优先显示完整 */
+.opres{
+  flex:1 1 auto;min-width:0;
+  font-size:13.5px;font-weight:700;color:var(--accent);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;
+}
+.opbtns{flex:0 0 auto;display:flex;gap:5px;justify-content:flex-end;}
+.opk{
+  appearance:none;flex:0 0 auto;
+  border:1px solid var(--line);background:#fff;color:var(--ink);
+  border-radius:9px;min-width:38px;height:38px;padding:0 8px;
+  font:inherit;font-size:17px;font-weight:600;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.opk:active{background:#efece5;}
+.opk.ok{
+  background:var(--accent);border-color:var(--accent);color:#fff;
+  font-size:13.5px;font-weight:700;min-width:78px;
+}
+body.opbar-on{padding-bottom:120px;}
+@media (max-width:400px){
+  .opbar{gap:6px;padding-left:8px;padding-right:8px;}
+  .opbtns{gap:4px;}
+  .opres{font-size:12.5px;}
+  .opk{min-width:33px;height:36px;font-size:16px;padding:0 5px;}
+  .opk.ok{min-width:58px;font-size:12.5px;}
+}
+@media (max-width:340px){                 /* iPhone SE / mini */
+  .opres{font-size:11.5px;}
+  .opk{min-width:30px;padding:0 3px;}
+  .opk.ok{min-width:46px;font-size:11.5px;}
+}
+
 @keyframes calcflash{
   0%{background:#fff3d6;box-shadow:0 0 0 3px rgba(138,109,59,.18);}
   100%{background:#fff;box-shadow:0 0 0 0 rgba(138,109,59,0);}
