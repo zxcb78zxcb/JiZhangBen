@@ -553,6 +553,246 @@ function renderYear(){
 }
 
 /* =====================================================================
+   视图：查询 —— 任意起止日期 + 任意分类组合
+   ===================================================================== */
+const QGROUPS = CATS.map(c => ({
+  id: c.id, name: c.name,
+  subs: c.subs.map(s => ({ id: s[0], name: s[1] || c.name }))
+})).concat([{ id:'income', name:'收入', subs:[{ id:'income', name:'收入' }] }]);
+const ALLQ = [];
+QGROUPS.forEach(g => g.subs.forEach(s => ALLQ.push(s.id)));
+
+function subLabel(sid){
+  for (const g of QGROUPS) for (const s of g.subs) if (s.id === sid)
+    return (g.subs.length > 1) ? (g.name + '·' + s.name) : g.name;
+  return sid;
+}
+function catNameOf(sid){
+  for (const g of QGROUPS) for (const s of g.subs) if (s.id === sid) return g.name;
+  return sid;
+}
+function allDayKeys(){ return Object.keys(DB.days).sort(); }
+
+function getQ(){
+  const q = SC.q || {};
+  const today = ymd(new Date());
+  return {
+    from: q.from || today.slice(0,8) + '01',
+    to:   q.to   || today,
+    // 注意要分清「没设置过」和「一个都没勾」——
+    // 写成 q.subs.length ? ... : 全选 的话，点「全不选」会立刻弹回全选
+    subs: Array.isArray(q.subs) ? q.subs.slice() : ALLQ.slice()
+  };
+}
+function setQ(patch){
+  SC.q = Object.assign(getQ(), patch);
+  saveSC();
+}
+
+function renderQuery(){
+  const q = getQ();
+  const sel = {}; q.subs.forEach(s => sel[s] = 1);
+  const ks = allDayKeys().filter(k => k >= q.from && k <= q.to);
+
+  /* ---- 取数 ---- */
+  const perSub = {}, perCat = {};
+  let spend = 0, income = 0, lines = 0;
+  const detail = [];                       // [{ds, rows:[{sid,n,a}], note, sum}]
+  ks.forEach(ds => {
+    const d = DB.days[ds], picked = [];
+    let daySum = 0, dayInc = 0;
+    for (const sid in (d.rows || {})) {
+      if (!sel[sid]) continue;
+      (d.rows[sid] || []).forEach(r => {
+        const a = num(r.a);
+        if (!a && !(r.n || '').trim()) return;
+        picked.push({ sid: sid, n: r.n || '', a: a });
+        lines++;
+        perSub[sid] = (perSub[sid] || 0) + a;
+        const cn = catNameOf(sid);
+        perCat[cn] = (perCat[cn] || 0) + a;
+        if (sid === 'income') { income += a; dayInc += a; }
+        else { spend += a; daySum += a; }
+      });
+    }
+    // 只有真的有选中的条目才列出来；备注是附带显示的，不单独成行
+    if (picked.length) detail.push({ ds: ds, rows: picked, note: (d.note||'').trim(), sum: daySum, inc: dayInc });
+  });
+  detail.reverse();                        // 新的在上面
+
+  const nDays = ks.length;
+  const spanDays = Math.max(1, Math.round((parseYmd(q.to) - parseYmd(q.from)) / 864e5) + 1);
+
+  /* ---- 时间段 ---- */
+  let h = '<section class="card"><h3>看哪段时间</h3><div class="body">';
+  h += '<div class="qdates">'
+     + '<input class="tinp" type="date" id="qFrom" value="'+q.from+'">'
+     + '<span class="qto">~</span>'
+     + '<input class="tinp" type="date" id="qTo" value="'+q.to+'">'
+     + '</div>';
+  h += '<div class="qquick">'
+     + [['t7','最近 7 天'],['t30','最近 30 天'],['tw','本周'],['tm','本月'],
+        ['lm','上个月'],['ty','今年'],['all','全部']]
+        .map(x => '<button class="qb" data-q="'+x[0]+'">'+x[1]+'</button>').join('')
+     + '</div>';
+  h += '<div class="hint">这段里有记录的天数：'+nDays+' 天（区间共 '+spanDays+' 天）</div>';
+  h += '</div></section>';
+
+  /* ---- 分类选择 ---- */
+  const allOn = q.subs.length === ALLQ.length;
+  h += '<section class="card"><h3>看哪些项目'
+     + '<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">已选 '+q.subs.length+' / '+ALLQ.length+'</span>'
+     + '</h3><div class="body">';
+  h += '<div class="qquick" style="margin-bottom:8px">'
+     + '<button class="qb" data-pick="all">全选</button>'
+     + '<button class="qb" data-pick="none">全不选</button>'
+     + '<button class="qb" data-pick="spend">只看支出</button>'
+     + '<button class="qb" data-pick="income">只看收入</button>'
+     + '</div>';
+  QGROUPS.forEach((g, i) => {
+    const on = g.subs.every(s => sel[s.id]);
+    const half = !on && g.subs.some(s => sel[s.id]);
+    h += '<div class="qgrp'+(g.id==='income'?' inc':'')+'">';
+    h += '<label class="qrow"><input type="checkbox" data-grp="'+g.id+'"'+(on?' checked':'')+'>'
+       + '<span class="'+(half?'half':'')+'">'+(i+1)+'. '+g.name+'</span>'
+       + '<b>'+((perCat[g.name]||0) ? yen(perCat[g.name]) : '')+'</b></label>';
+    if (g.subs.length > 1) {
+      h += '<div class="qsubs">' + g.subs.map(s =>
+          '<label class="qrow sub"><input type="checkbox" data-sub="'+s.id+'"'+(sel[s.id]?' checked':'')+'>'
+        + '<span>'+s.name+'</span><b>'+((perSub[s.id]||0)?yen(perSub[s.id]):'')+'</b></label>').join('')
+        + '</div>';
+    }
+    h += '</div>';
+  });
+  h += '</div></section>';
+
+  /* ---- 合计 ---- */
+  h += '<div class="sumbar">'
+     +  '<div class="box"><div class="lb">支出</div><div class="vl">'+yen(spend)+'</div></div>'
+     +  '<div class="box inc"><div class="lb">收入</div><div class="vl">'+yen(income)+'</div></div>'
+     +  '<div class="box bal"><div class="lb">结余</div><div class="vl">'+yen(income-spend)+'</div></div>'
+     + '</div>';
+  h += '<section class="card"><div class="body">'
+     + '<div class="kv"><span>笔数</span><b>'+lines+' 笔</b></div>'
+     + '<div class="kv"><span>有记录的天数</span><b>'+nDays+' 天</b></div>'
+     + '<div class="kv"><span>日均支出（按区间 '+spanDays+' 天）</span><b>'+yen(spend/spanDays)+'</b></div>'
+     + '<div class="kv"><span>有记录那几天的日均</span><b>'+yen(nDays?spend/nDays:0)+'</b></div>'
+     + '<div class="btnrow" style="margin-top:10px"><button class="btn" id="qCsv">把这个结果导成 CSV</button></div>'
+     + '</div></section>';
+
+  /* ---- 分类占比 ---- */
+  const catRows = Object.keys(perCat).filter(k => k !== '收入' && perCat[k])
+                        .sort((a,b) => perCat[b] - perCat[a]);
+  if (catRows.length) {
+    h += '<section class="card"><h3>各项占多少</h3><div class="tablewrap"><table><thead><tr>'
+       + '<th class="name">项目</th><th class="n">金额</th><th class="n">占比</th><th style="width:38%">　</th>'
+       + '</tr></thead><tbody>';
+    catRows.forEach(k => {
+      const pc = spend ? (perCat[k] / spend * 100) : 0;
+      h += '<tr><td class="name">'+esc(k)+'</td>'+cell(perCat[k])
+         + '<td class="n">'+pc.toFixed(1)+'%</td>'
+         + '<td><span class="qbar" style="width:'+Math.max(2,Math.round(pc))+'%"></span></td></tr>';
+    });
+    h += '</tbody></table></div></section>';
+  }
+
+  /* ---- 明细 ---- */
+  h += '<section class="card"><h3>明细<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">'
+     + detail.length+' 天 · 新的在上面</span></h3><div class="body">';
+  if (!detail.length) {
+    h += '<div class="hint">这段时间里，选中的项目没有记录。换个日期或多勾几项试试。</div>';
+  } else {
+    detail.forEach(d => {
+      const dt = parseYmd(d.ds);
+      h += '<div class="qday"><div class="qdh"><span>'+d.ds.replace(/-/g,'/')+' '+wdOf(dt)+'</span>'
+         + '<b>'+(d.sum?yen(d.sum):'')+(d.inc?' <span style="color:var(--blue)">+'+yen(d.inc)+'</span>':'')+'</b></div>';
+      d.rows.forEach(r => {
+        const isInc = r.sid === 'income';
+        h += '<div class="qline'+(isInc?' inc':'')+'">'
+           + '<span class="qtag">'+esc(subLabel(r.sid))+'</span>'
+           + '<span class="qnm">'+esc(r.n || '（没写名称）')+'</span>'
+           + '<b>'+(isInc?'+':'')+yen(r.a)+'</b></div>';
+      });
+      if (d.note) h += '<div class="qnote">📝 '+esc(d.note)+'</div>';
+      h += '</div>';
+    });
+  }
+  h += '</div></section>';
+
+  app.innerHTML = h;
+  bindQuery(q);
+}
+
+function bindQuery(q){
+  const $ = id => document.getElementById(id);
+  const go = patch => { setQ(patch); renderQuery(); };
+
+  const f = $('qFrom'), t = $('qTo');
+  if (f) f.onchange = e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) go({ from:e.target.value }); };
+  if (t) t.onchange = e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) go({ to:e.target.value }); };
+
+  document.querySelectorAll('.qb[data-q]').forEach(b => b.onclick = () => {
+    const today = new Date(), k = b.dataset.q;
+    let from, to = ymd(today);
+    if (k === 't7')  from = ymd(addDays(today, -6));
+    if (k === 't30') from = ymd(addDays(today, -29));
+    if (k === 'tw')  { const ws = weekStart(today); from = ymd(ws); to = ymd(addDays(ws, 6)); }
+    if (k === 'tm')  { from = ymd(today).slice(0,8) + '01'; }
+    if (k === 'lm')  {
+      const m = prevMonth(ymOf(today));
+      const r = monthRange(m); from = r[0]; to = r[1];
+    }
+    if (k === 'ty')  { from = today.getFullYear() + '-01-01'; to = today.getFullYear() + '-12-31'; }
+    if (k === 'all') { const ks = allDayKeys(); from = ks[0] || ymd(today); to = ks[ks.length-1] || ymd(today); }
+    go({ from:from, to:to });
+  });
+
+  document.querySelectorAll('.qb[data-pick]').forEach(b => b.onclick = () => {
+    const k = b.dataset.pick;
+    if (k === 'all')    go({ subs: ALLQ.slice() });
+    if (k === 'none')   go({ subs: [] });
+    if (k === 'spend')  go({ subs: ALLQ.filter(s => s !== 'income') });
+    if (k === 'income') go({ subs: ['income'] });
+  });
+
+  document.querySelectorAll('input[data-grp]').forEach(c => c.onchange = () => {
+    const g = QGROUPS.find(x => x.id === c.dataset.grp);
+    const ids = g.subs.map(s => s.id);
+    let subs = getQ().subs.filter(s => ids.indexOf(s) < 0);
+    if (c.checked) subs = subs.concat(ids);
+    go({ subs: subs });
+  });
+  document.querySelectorAll('input[data-sub]').forEach(c => c.onchange = () => {
+    const id = c.dataset.sub;
+    let subs = getQ().subs.filter(s => s !== id);
+    if (c.checked) subs.push(id);
+    go({ subs: subs });
+  });
+
+  const csv = $('qCsv');
+  if (csv) csv.onclick = () => {
+    const sel = {}; q.subs.forEach(s => sel[s] = 1);
+    const rows = [['日期','星期','大分类','小分类','项目名称','金额','收支','当日备注']];
+    allDayKeys().filter(k => k >= q.from && k <= q.to).forEach(ds => {
+      const d = DB.days[ds];
+      for (const sid in (d.rows || {})) {
+        if (!sel[sid]) continue;
+        (d.rows[sid] || []).forEach(r => {
+          const a = num(r.a);
+          if (!a && !(r.n || '').trim()) return;
+          const lab = subLabel(sid).split('·');
+          rows.push([ds, wdOf(parseYmd(ds)), lab[0], lab[1] || lab[0],
+                     r.n || '', a, sid === 'income' ? '收入' : '支出', (d.note||'').replace(/\n/g,' ')]);
+        });
+      }
+    });
+    const text = '﻿' + rows.map(r => r.map(x => '"' + String(x).replace(/"/g,'""') + '"').join(',')).join('\r\n');
+    download('记账本查询_' + q.from + '_至_' + q.to + '.csv', text, 'text/csv');
+    toast('已导出 ' + (rows.length - 1) + ' 笔');
+  };
+}
+
+/* =====================================================================
    视图：数据
    ===================================================================== */
 function renderData(){
@@ -1311,6 +1551,7 @@ function render(){
   else if (view === 'week') renderWeek();
   else if (view === 'month')renderMonth();
   else if (view === 'year') renderYear();
+  else if (view === 'query')renderQuery();
   else                      renderData();
   app.insertAdjacentHTML('afterbegin', warnHTML());
   bindWarn();
@@ -1628,6 +1869,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
   calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
   cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
+  ALLQ, QGROUPS, yen, subLabel, renderQuery,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();

@@ -58,7 +58,7 @@ body{
 .brand span{font-size:11px;font-weight:400;color:var(--ink-soft);letter-spacing:.2em;margin-left:6px;}
 .tabs{display:flex;gap:4px;margin-top:8px;overflow-x:auto;}
 .tab{
-  flex:1 1 0;min-width:52px;
+  flex:1 1 0;min-width:46px;
   appearance:none;border:0;background:transparent;
   font:inherit;font-size:14px;color:var(--ink-soft);
   padding:9px 4px;border-bottom:2.5px solid transparent;
@@ -282,6 +282,51 @@ td.zero{color:#c9c4b8;}
 
 .tip{font-size:12.5px;color:var(--ink-soft);background:#fffdf6;border:1px solid var(--line);
   border-radius:10px;padding:9px 11px;margin-bottom:12px;line-height:1.6;}
+
+/* ---------- 查询页 ---------- */
+.qdates{display:flex;align-items:center;gap:8px;}
+.qdates .tinp{flex:1;min-width:0;}
+.qto{color:var(--ink-soft);font-weight:700;}
+.qquick{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px;}
+.qb{
+  appearance:none;border:1px solid var(--line);background:#fbfaf7;color:var(--ink);
+  border-radius:16px;padding:6px 12px;font:inherit;font-size:12.5px;cursor:pointer;
+}
+.qb:active{background:#efece5;}
+
+.qgrp{border-bottom:1px solid var(--line2);}
+.qgrp:last-child{border-bottom:0;}
+.qgrp.inc .qrow span,.qgrp.inc .qrow b{color:var(--blue);}
+.qrow{
+  display:flex;align-items:center;gap:9px;padding:9px 2px;cursor:pointer;font-size:14.5px;
+}
+.qrow input{width:19px;height:19px;flex:0 0 auto;accent-color:var(--accent);}
+.qrow span{flex:1;min-width:0;}
+.qrow span.half{color:var(--accent);font-style:italic;}
+.qrow b{font-variant-numeric:tabular-nums;font-size:13.5px;color:var(--ink-soft);}
+.qrow.sub{padding:6px 2px 6px 26px;font-size:13.5px;color:var(--ink-soft);}
+.qsubs{border-top:1px dashed var(--line2);margin-bottom:4px;}
+
+.qbar{display:block;height:9px;border-radius:5px;background:var(--accent);opacity:.65;}
+
+.qday{border-bottom:1px solid var(--line2);padding:9px 0;}
+.qday:last-child{border-bottom:0;}
+.qdh{
+  display:flex;justify-content:space-between;align-items:baseline;
+  font-size:13px;font-weight:700;color:var(--ink-soft);margin-bottom:5px;
+}
+.qdh b{color:var(--ink);font-size:14.5px;font-variant-numeric:tabular-nums;}
+.qline{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:14px;}
+.qline b{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.qline.inc,.qline.inc b{color:var(--blue);}
+.qtag{
+  flex:0 0 auto;font-size:11px;color:var(--ink-soft);
+  background:#f4f1ea;border-radius:5px;padding:2px 6px;white-space:nowrap;
+}
+.qline.inc .qtag{background:var(--blue-soft);color:var(--blue);}
+.qnm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.qnote{font-size:12.5px;color:var(--ink-soft);background:#fffdf6;border-radius:8px;
+  padding:6px 9px;margin-top:5px;white-space:pre-wrap;}
 
 /* ---------- 常驻警告条 ---------- */
 .warnbar{
