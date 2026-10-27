@@ -283,6 +283,83 @@ td.zero{color:#c9c4b8;}
 .tip{font-size:12.5px;color:var(--ink-soft);background:#fffdf6;border:1px solid var(--line);
   border-radius:10px;padding:9px 11px;margin-bottom:12px;line-height:1.6;}
 
+/* ---------- 预算页 ---------- */
+.bdays{display:flex;align-items:center;gap:8px;}
+.bdays .tinp{flex:1;min-width:0;}
+.bdays span{color:var(--ink-soft);font-size:13px;white-space:nowrap;}
+.bcats{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.bchip{
+  display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+  border:1px solid var(--line);background:#fbfaf7;color:var(--ink-soft);
+  border-radius:16px;padding:5px 11px;font-size:12.5px;
+}
+.bchip.on{border-color:var(--accent);background:#f7f1e4;color:var(--ink);font-weight:600;}
+.bchip.busy{opacity:.4;cursor:not-allowed;text-decoration:line-through;}
+.bchip input{width:15px;height:15px;accent-color:var(--accent);}
+
+/* 分项编辑行 */
+.bitem{
+  display:grid;grid-template-columns:1fr 104px;gap:6px;
+  padding:9px;margin-top:8px;border:1px solid var(--line);border-radius:10px;background:#fdfcfa;
+}
+.bitem .bi-act{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;}
+.bitem .bchips{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+.bi-cat.on{border-color:var(--accent);background:#f7f1e4;font-weight:600;}
+.bi-del{color:var(--up);border-color:#e8cfcb;}
+.balloc{
+  margin-top:10px;padding:8px 10px;border-radius:9px;
+  background:#f6f3ec;border:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-soft);
+}
+.balloc b{color:var(--ink);font-variant-numeric:tabular-nums;}
+.balloc.bad{background:#fdf1f0;border-color:#e8cfcb;color:var(--up);}
+.balloc.bad b{color:var(--up);}
+
+/* 卡片里的分项明细 */
+.bsplit{margin-top:12px;border-top:1px solid var(--line2);padding-top:10px;}
+.bsplit-h{font-size:12.5px;font-weight:700;color:var(--ink-soft);margin-bottom:6px;}
+.brow{padding:7px 0;border-bottom:1px dashed var(--line2);}
+.brow:last-of-type{border-bottom:0;}
+.brow-t{display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px;gap:8px;}
+.brow-t b{font-variant-numeric:tabular-nums;white-space:nowrap;}
+.brow-b{display:flex;justify-content:space-between;font-size:11.5px;color:var(--ink-soft);margin-top:3px;}
+.brow.over .brow-t,.brow.over .brow-b{color:var(--up);}
+.btag{
+  font-style:normal;font-size:10.5px;margin-left:6px;padding:1px 6px;border-radius:5px;
+  background:#efece5;color:var(--ink-soft);
+}
+.bminibar{height:6px;border-radius:4px;background:#efece5;overflow:hidden;margin-top:5px;}
+.bminibar span{display:block;height:100%;background:var(--down);border-radius:4px;}
+.brow.over .bminibar span{background:var(--up);}
+.brow.nolimit .brow-t b{color:var(--up);}
+
+.budcard>h3{background:linear-gradient(180deg,#fbfaf7,#f4f1ea);}
+.budcard.over>h3{background:linear-gradient(180deg,#fdf3f2,#f9e6e3);color:var(--up);}
+.budcard.ahead>h3{background:linear-gradient(180deg,#fffaf0,#f8f0dd);color:#8a6a16;}
+.budcard.done>h3{color:var(--ink-soft);}
+.budtop{text-align:center;padding:4px 0 12px;}
+.budlb{font-size:12.5px;color:var(--ink-soft);letter-spacing:.08em;}
+.budbig{font-size:36px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;color:var(--down);}
+.budcard.over .budbig{color:var(--up);}
+.budcard.ahead .budbig{color:#8a6a16;}
+.budcard.done .budbig{color:var(--ink-soft);}
+.budsub{font-size:12px;color:var(--ink-soft);margin-top:4px;}
+.budbar{
+  position:relative;height:12px;border-radius:7px;background:#efece5;
+  overflow:visible;margin:6px 0 6px;
+}
+.budbar .fill{
+  position:absolute;left:0;top:0;bottom:0;border-radius:7px;
+  background:var(--down);transition:width .25s;
+}
+.budcard.ahead .budbar .fill{background:#d4a017;}
+.budcard.over .budbar .fill{background:var(--up);}
+.budbar .mark{
+  position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--ink);
+  opacity:.45;border-radius:2px;
+}
+.budlegend{display:flex;justify-content:space-between;font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;}
+
 /* ---------- 查询页 ---------- */
 .qdates{display:flex;align-items:center;gap:8px;}
 .qdates .tinp{flex:1;min-width:0;}

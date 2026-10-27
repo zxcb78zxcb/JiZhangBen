@@ -27,13 +27,14 @@ const DEFAULT_FIXED = [ '房租', '通信费', '水电费', '会费', '税费' ]
 const KEY = 'kakeibo_v1';
 let DB = loadDB();
 
-function emptyDB(){ return { v:2, days:{}, months:{}, tomb:{} }; }
+function emptyDB(){ return { v:2, days:{}, months:{}, budgets:{}, tomb:{} }; }
 function loadDB() {
   try {
     const s = localStorage.getItem(KEY);
     if (s) {
       const o = JSON.parse(s);
-      o.v = 2; o.days = o.days || {}; o.months = o.months || {}; o.tomb = o.tomb || {};
+      o.v = 2; o.days = o.days || {}; o.months = o.months || {};
+      o.budgets = o.budgets || {}; o.tomb = o.tomb || {};
       return o;
     }
   } catch (e) { console.warn(e); }
@@ -550,6 +551,506 @@ function renderYear(){
   h += '</div></section>';
 
   app.innerHTML = h;
+}
+
+/* =====================================================================
+   视图：预算 —— 可以建任意多个，各管各的时间段和额度
+   ===================================================================== */
+let budEdit = null;                 // null = 不在编辑；'new' = 新建；其它 = 正在编辑的 id
+
+function newBudId(){ return 'b' + nowTs().toString(36) + Math.random().toString(36).slice(2,6); }
+function budList(){ return Object.keys(DB.budgets || {}).map(k => DB.budgets[k]).filter(Boolean); }
+function daysBetween(a, b){ return Math.round((parseYmd(b) - parseYmd(a)) / 864e5) + 1; }
+
+/* 预算只统计「日常记的账」，不含月度固定支出（房租那些按月走，摊到任意区间没意义） */
+function spentIn(from, to, subs){
+  const sel = {};
+  (subs && subs.length ? subs : ALLSUBS).forEach(s => sel[s] = 1);
+  let t = 0;
+  for (const k in DB.days) {
+    if (k < from || k > to) continue;
+    const rows = DB.days[k].rows || {};
+    for (const sid in rows) {
+      if (sid === INC || !sel[sid]) continue;
+      (rows[sid] || []).forEach(r => { t += num(r.a); });
+    }
+  }
+  return t;
+}
+
+/* 一个预算当前的全部状态，界面只管显示。
+   结构：总预算 + 若干分项（每个分项绑定一些分类）+ 备用金（不绑分类，接收没归到分项的支出）*/
+function budItems(b){ return Array.isArray(b.items) ? b.items : []; }
+
+function budStat(b){
+  const today = ymd(new Date());
+  const limit = num(b.limit);
+  const spent = spentIn(b.from, b.to, b.subs);          // 整个预算范围内的总花销
+  const remain = limit - spent;
+  const total = Math.max(1, daysBetween(b.from, b.to));
+  let phase = 'on', passed, left;
+  if (today < b.from)      { phase = 'before'; passed = 0;      left = total; }
+  else if (today > b.to)   { phase = 'after';  passed = total;  left = 0; }
+  else                     { passed = daysBetween(b.from, today); left = daysBetween(today, b.to); }
+  const shouldBy = limit * passed / total;              // 按时间推进「本该」花到这里
+
+  /* ---- 分项 ---- */
+  const raw = budItems(b);
+  const taken = {};                                     // 已经被某个分项认领的分类
+  raw.forEach(it => (it.subs || []).forEach(s => taken[s] = 1));
+  const scope = (b.subs && b.subs.length) ? b.subs : ALLSUBS;
+  const otherSubs = scope.filter(s => !taken[s]);
+  const other = otherSubs.length ? spentIn(b.from, b.to, otherSubs) : 0;
+
+  let catchUsed = false;
+  const items = raw.map(it => {
+    const isCatch = !(it.subs && it.subs.length);       // 没绑分类 = 备用金/意外
+    let sp;
+    if (isCatch) { sp = catchUsed ? 0 : other; catchUsed = true; }
+    else sp = spentIn(b.from, b.to, it.subs);
+    const lim = num(it.limit);
+    return {
+      name: it.name || (isCatch ? '备用金 / 意外' : '未命名'),
+      subs: it.subs || [], isCatch: isCatch,
+      limit: lim, spent: sp, remain: lim - sp, over: lim > 0 && sp > lim,
+      pct: lim > 0 ? Math.min(100, sp / lim * 100) : (sp > 0 ? 100 : 0),
+      pctReal: lim > 0 ? sp / lim * 100 : 0
+    };
+  });
+  const allocated = items.reduce((t, it) => t + it.limit, 0);
+
+  return {
+    limit: limit, spent: spent, remain: remain,
+    total: total, passed: passed, left: left, phase: phase,
+    pctSpent: limit > 0 ? Math.min(100, spent / limit * 100) : 0,   // 进度条用，封顶 100
+    pctReal:  limit > 0 ? spent / limit * 100 : 0,                  // 文字用，超了就显示真实值
+    pctTime:  Math.min(100, passed / total * 100),
+    perDayLeft: left > 0 ? remain / left : 0,        // 今天起每天还能花
+    perDayPlan: limit / total,
+    aheadBy: spent - shouldBy,                       // >0 = 花超前了
+    over: remain < 0,
+    items: items,
+    allocated: allocated,                            // 分项加起来分掉了多少
+    unallocated: limit - allocated,                  // 总预算还没分配的部分
+    other: other,                                    // 没归到任何分项的支出
+    hasCatch: catchUsed
+  };
+}
+
+function budFormHTML(b){
+  const isNew = !b.id;
+  const today = ymd(new Date());
+  const from  = b.from || today;
+  const to    = b.to   || ymd(addDays(parseYmd(from), 29));
+  const days  = daysBetween(from, to);
+  const limited = !!(b.subs && b.subs.length);
+  const sel = {}; (b.subs || []).forEach(s => sel[s] = 1);
+
+  let h = '<section class="card budform"><h3>'+(isNew ? '新建预算' : '修改预算')+'</h3><div class="body">';
+  h += '<div class="rowhead"><div>叫什么名字</div></div>';
+  h += '<input class="tinp" id="bName" type="text" placeholder="例：11月省钱 / 旅游预算" value="'+esc(b.name||'')+'">';
+
+  h += '<div class="rowhead" style="margin-top:10px"><div>从哪天开始</div></div>';
+  h += '<input class="tinp" id="bFrom" type="date" value="'+from+'">';
+
+  h += '<div class="rowhead" style="margin-top:10px"><div>管多少天</div></div>';
+  h += '<div class="bdays"><input class="tinp" id="bDays" type="number" inputmode="numeric" min="1" value="'+days+'">'
+     + '<span>天，到</span><input class="tinp" id="bTo" type="date" value="'+to+'"></div>';
+  h += '<div class="qquick">'
+     + [7,14,30,60,90].map(d => '<button class="qb" data-bd="'+d+'">'+d+' 天</button>').join('')
+     + '<button class="qb" data-bd="month">到月底</button></div>';
+
+  h += '<div class="rowhead" style="margin-top:10px"><div>总预算：这段时间一共最多花多少（日元）</div></div>';
+  h += '<input class="tinp" id="bLimit" type="text" inputmode="decimal" placeholder="例：200000" value="'+esc(b.limit||'')+'">';
+  h += '<div class="hint">这里也能写算式，比如 <b>150000+50000</b>，离开输入框自动算。</div>';
+
+  h += '<label class="swline" style="margin-top:8px"><input type="checkbox" id="bLimitCat"'+(limited?' checked':'')+'>'
+     + '<span>整个预算只算某几个分类（不勾＝算全部支出）</span></label>';
+  if (limited) {
+    h += '<div class="bcats">';
+    QGROUPS.forEach(g => {
+      if (g.id === 'income') return;
+      g.subs.forEach(s => {
+        h += '<label class="bchip'+(sel[s.id]?' on':'')+'">'
+           + '<input type="checkbox" data-bsub="'+s.id+'"'+(sel[s.id]?' checked':'')+'>'
+           + esc(g.subs.length>1 ? g.name+'·'+s.name : g.name) + '</label>';
+      });
+    });
+    h += '</div>';
+  }
+
+  /* ---------- 分项预算 ---------- */
+  const items = budItems(b);
+  const takenBy = {};
+  items.forEach((it, i) => (it.subs || []).forEach(s => { if (takenBy[s] === undefined) takenBy[s] = i; }));
+
+  h += '<div style="margin-top:16px;border-top:1px solid var(--line2);padding-top:12px">';
+  h += '<div style="font-weight:700;font-size:14px;margin-bottom:4px">分项预算（可不填）</div>';
+  h += '<div class="hint" style="padding:0 0 8px">'
+     + '把总预算拆开，比如「吃饭 6 万、娱乐 2 万、日用品 1 万」。<br>'
+     + '再加一个<b>不绑分类</b>的「备用金 / 意外」，<b>所有没归到分项的支出都会算在它头上</b>。</div>';
+
+  if (!items.length) h += '<div class="hint">还没有分项。点下面的按钮加。</div>';
+
+  items.forEach((it, i) => {
+    const isCatch = !(it.subs && it.subs.length);
+    const open = budCatOpen === i;
+    h += '<div class="bitem" data-i="'+i+'">';
+    h += '<input class="tinp bi-name" type="text" placeholder="分项名称" value="'+esc(it.name||'')+'">';
+    h += '<input class="tinp bi-limit" type="text" inputmode="decimal" placeholder="金额" value="'+esc(it.limit||'')+'">';
+    h += '<div class="bi-act">';
+    h += '<button class="qb bi-cat'+(open?' on':'')+'" data-bi="'+i+'">'
+       + (isCatch ? '不绑分类（备用金）' : '分类 '+it.subs.length+' 项') + ' ▾</button>';
+    h += '<button class="qb bi-del" data-bidel="'+i+'">删除</button>';
+    h += '</div>';
+    if (open) {
+      h += '<div class="bchips">';
+      QGROUPS.forEach(g => {
+        if (g.id === 'income') return;
+        g.subs.forEach(s => {
+          const mine = (it.subs || []).indexOf(s.id) >= 0;
+          const owner = takenBy[s.id];
+          const busy = !mine && owner !== undefined;
+          h += '<label class="bchip'+(mine?' on':'')+(busy?' busy':'')+'"'
+             + (busy ? ' title="已经被「'+esc(items[owner].name||'另一个分项')+'」占用"' : '') + '>'
+             + '<input type="checkbox" data-isub="'+s.id+'" data-ii="'+i+'"'
+             + (mine?' checked':'') + (busy?' disabled':'') + '>'
+             + esc(g.subs.length>1 ? g.name+'·'+s.name : g.name) + '</label>';
+        });
+      });
+      h += '</div><div class="hint">一个分类只能归一个分项，灰掉的是别的分项已经占了。<br>'
+         + '一个都不勾＝这是「备用金 / 意外」，会收所有没归类的支出。</div>';
+    }
+    h += '</div>';
+  });
+
+  h += '<div class="qquick" style="margin-top:8px">';
+  QGROUPS.forEach(g => {
+    if (g.id === 'income') return;
+    const used = g.subs.every(s => takenBy[s.id] !== undefined);
+    if (used) return;
+    h += '<button class="qb" data-badd="'+g.id+'">＋ '+esc(g.name)+'</button>';
+  });
+  h += '<button class="qb" data-badd="__catch">＋ 备用金 / 意外</button>';
+  h += '<button class="qb" data-badd="__blank">＋ 空白分项</button>';
+  h += '</div>';
+
+  h += '<div class="balloc" id="bAlloc"></div>';
+  h += '</div>';
+
+  h += '<div class="btnrow" style="margin-top:14px">'
+     + '<button class="btn primary" id="bSave">保存</button>'
+     + '<button class="btn" id="bCancel">取消</button>'
+     + (isNew ? '' : '<button class="btn danger" id="bDel">删除这个预算</button>')
+     + '</div>';
+  h += '</div></section>';
+  return h;
+}
+
+function budCardHTML(b){
+  const s = budStat(b);
+  const cls = s.over ? 'over' : (s.phase === 'after' ? 'done' : (s.aheadBy > 0 ? 'ahead' : 'ok'));
+  const phaseTxt = s.phase === 'before' ? '还没开始'
+                 : s.phase === 'after'  ? '已结束'
+                 : '剩 ' + s.left + ' 天';
+
+  let h = '<section class="card budcard '+cls+'" data-bid="'+b.id+'">';
+  h += '<h3><span>'+esc(b.name || '未命名预算')+'</span>'
+     + '<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">'+phaseTxt+'</span></h3>';
+  h += '<div class="body">';
+
+  h += '<div class="budtop">'
+     + '<div class="budlb">'+(s.over ? '超支了' : '还能花')+'</div>'
+     + '<div class="budbig">'+yen(Math.abs(s.remain))+'</div>'
+     + '<div class="budsub">'+b.from.replace(/-/g,'/')+' ~ '+b.to.replace(/-/g,'/')
+     + '　共 '+s.total+' 天　预算 '+yen(s.limit)+'</div>'
+     + '</div>';
+
+  h += '<div class="budbar"><span class="fill" style="width:'+s.pctSpent.toFixed(1)+'%"></span>'
+     + '<span class="mark" style="left:'+s.pctTime.toFixed(1)+'%"></span></div>';
+  h += '<div class="budlegend"><span>已花 '+yen(s.spent)+'（'+s.pctReal.toFixed(0)+'%）</span>'
+     + '<span>时间过了 '+s.pctTime.toFixed(0)+'%</span></div>';
+
+  h += '<div class="kv"><span>今天起每天还能花</span><b'+(s.over?' style="color:var(--up)"':'')+'>'
+     + (s.over ? '已超支' : (s.left > 0 ? yen(s.perDayLeft) : '—')) + '</b></div>';
+  h += '<div class="kv"><span>原计划日均</span><b>'+yen(s.perDayPlan)+'</b></div>';
+  h += '<div class="kv"><span>已过天数的实际日均</span><b>'
+     + (s.passed > 0 ? yen(s.spent / s.passed) : '—') + '</b></div>';
+  if (s.phase === 'on') {
+    const a = Math.round(Math.abs(s.aheadBy));
+    h += '<div class="kv"><span>按进度比</span><b class="'+(s.aheadBy > 0 ? 'up' : 'down')+'">'
+       + (s.aheadBy > 0 ? '超前花了 ' + yen(a) : '省下 ' + yen(a)) + '</b></div>';
+  }
+
+  /* ---- 分项明细 ---- */
+  if (s.items.length) {
+    h += '<div class="bsplit"><div class="bsplit-h">分项</div>';
+    s.items.forEach(it => {
+      h += '<div class="brow'+(it.over?' over':'')+'">';
+      h += '<div class="brow-t"><span>'+esc(it.name)
+         + (it.isCatch ? '<i class="btag">兜底</i>' : '') + '</span>'
+         + '<b>'+yen(it.spent)+' / '+yen(it.limit)+'</b></div>';
+      h += '<div class="bminibar"><span style="width:'+it.pct.toFixed(1)+'%"></span></div>';
+      h += '<div class="brow-b"><span>'
+         + (it.limit > 0 ? (it.over ? '超了 '+yen(it.spent-it.limit) : '还能花 '+yen(it.remain)) : '没设上限')
+         + '</span><span>'+(it.limit>0 ? it.pctReal.toFixed(0)+'%' : '')+'</span></div>';
+      h += '</div>';
+    });
+    if (!s.hasCatch && s.other > 0) {
+      h += '<div class="brow nolimit"><div class="brow-t"><span>其它（没归到分项）</span>'
+         + '<b>'+yen(s.other)+'</b></div>'
+         + '<div class="brow-b"><span>没给它设预算，建议加一个「备用金 / 意外」</span><span></span></div></div>';
+    }
+    h += '<div class="kv" style="margin-top:8px"><span>分项合计已分配</span><b>'+yen(s.allocated)+'</b></div>';
+    h += '<div class="kv"><span>' + (s.unallocated >= 0 ? '总预算里还没分配' : '分项加起来已经超过总预算')
+       + '</span><b class="'+(s.unallocated < 0 ? 'up' : '')+'">'+yen(Math.abs(s.unallocated))+'</b></div>';
+    h += '</div>';
+  }
+
+  if (b.subs && b.subs.length) {
+    h += '<div class="hint" style="margin-top:6px">整个预算只算：'
+       + b.subs.map(x => esc(subLabel(x))).join('、') + '</div>';
+  }
+
+  h += '<div class="btnrow" style="margin-top:10px">'
+     + '<button class="btn" data-bsee="'+b.id+'">看明细</button>'
+     + '<button class="btn" data-bedit="'+b.id+'">修改</button>'
+     + '<button class="btn" data-bcopy="'+b.id+'">再来一期</button>'
+     + '</div>';
+  h += '</div></section>';
+  return h;
+}
+
+function renderBudget(){
+  const today = ymd(new Date());
+  const list = budList().sort((x, y) => {
+    const rank = b => (today < b.from ? 1 : (today > b.to ? 2 : 0));
+    return (rank(x) - rank(y)) || (x.from < y.from ? 1 : -1);
+  });
+
+  let h = '';
+  if (budEdit !== 'new') {
+    h += '<div class="btnrow" style="margin-bottom:12px">'
+       + '<button class="btn primary" id="budNew">＋ 新建一个预算</button></div>';
+  }
+  if (budEdit === 'new') h += budFormHTML({});
+
+  if (!list.length && budEdit !== 'new') {
+    h += '<div class="tip">还没有预算。<br>'
+       + '点上面「新建一个预算」，设一个「从今天起 30 天最多花 5 万」之类的目标，'
+       + '这一页就会实时显示<b>已经花了多少、还能花多少、今天起每天还能花多少</b>。<br>'
+       + '可以同时建好几个，各管各的时间段，互不影响。</div>';
+  }
+
+  list.forEach(b => {
+    h += (budEdit === b.id) ? budFormHTML(b) : budCardHTML(b);
+  });
+
+  if (list.length) {
+    h += '<div class="hint">预算只统计日常记的账，<b>不含月度固定支出</b>（房租、通信费这些按月走，'
+       + '摊到任意区间没意义）。</div>';
+  }
+
+  app.innerHTML = h;
+  bindBudget();
+}
+
+function bindBudget(){
+  const $ = id => document.getElementById(id);
+
+  const nb = $('budNew');
+  if (nb) nb.onclick = () => { budEdit = 'new'; renderBudget(); };
+
+  /* ---- 表单 ---- */
+  const fFrom = $('bFrom'), fDays = $('bDays'), fTo = $('bTo');
+  const syncTo = () => {                       // 天数 → 结束日期
+    if (!fFrom || !fDays || !fTo) return;
+    const n = Math.max(1, parseInt(fDays.value, 10) || 1);
+    fTo.value = ymd(addDays(parseYmd(fFrom.value), n - 1));
+  };
+  const syncDays = () => {                     // 结束日期 → 天数
+    if (!fFrom || !fDays || !fTo) return;
+    fDays.value = Math.max(1, daysBetween(fFrom.value, fTo.value));
+  };
+  if (fDays) fDays.oninput = syncTo;
+  if (fFrom) fFrom.onchange = syncTo;
+  if (fTo)   fTo.onchange = syncDays;
+
+  document.querySelectorAll('.qb[data-bd]').forEach(x => x.onclick = () => {
+    if (!fFrom) return;
+    if (x.dataset.bd === 'month') {
+      const d = parseYmd(fFrom.value);
+      fTo.value = ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+      syncDays();
+    } else {
+      fDays.value = x.dataset.bd; syncTo();
+    }
+  });
+
+  const lc = $('bLimitCat');
+  if (lc) lc.onchange = () => {
+    const cur = budEdit === 'new' ? {} : (DB.budgets[budEdit] || {});
+    const draft = readBudForm(cur);
+    draft.subs = lc.checked ? (draft.subs && draft.subs.length ? draft.subs : ALLSUBS.slice()) : null;
+    budDraft = draft;
+    renderBudgetKeepDraft(draft);
+  };
+  document.querySelectorAll('input[data-bsub]').forEach(c => c.onchange = () => {
+    c.closest('.bchip').classList.toggle('on', c.checked);
+  });
+
+  /* ---- 分项 ---- */
+  const reRender = draft => { budDraft = draft; renderBudgetKeepDraft(draft); };
+  // 有未保存的草稿就以草稿为准，否则用已存的记录。
+  // （分项的「绑定分类」不在输入框里，只能从这里带过来，拿错了就会丢选择）
+  const cur = () => budDraft || (budEdit === 'new' ? {} : (DB.budgets[budEdit] || {}));
+
+  document.querySelectorAll('[data-badd]').forEach(x => x.onclick = () => {
+    const d = readBudForm(cur());
+    d.items = d.items || [];
+    const k = x.dataset.badd;
+    if (k === '__catch')      d.items.push({ name:'备用金 / 意外', subs:[], limit:'' });
+    else if (k === '__blank') d.items.push({ name:'', subs:[], limit:'' });
+    else {
+      const g = QGROUPS.find(q => q.id === k);
+      const taken = {};
+      d.items.forEach(it => (it.subs||[]).forEach(s => taken[s] = 1));
+      d.items.push({ name:g.name, subs:g.subs.map(s => s.id).filter(s => !taken[s]), limit:'' });
+    }
+    budCatOpen = null;
+    reRender(d);
+  });
+
+  document.querySelectorAll('[data-bidel]').forEach(x => x.onclick = () => {
+    const d = readBudForm(cur());
+    d.items.splice(+x.dataset.bidel, 1);
+    budCatOpen = null;
+    reRender(d);
+  });
+
+  document.querySelectorAll('.bi-cat').forEach(x => x.onclick = () => {
+    const i = +x.dataset.bi;
+    const d = readBudForm(cur());
+    budCatOpen = (budCatOpen === i) ? null : i;
+    reRender(d);
+  });
+
+  document.querySelectorAll('input[data-isub]').forEach(c => c.onchange = () => {
+    const d = readBudForm(cur());
+    const i = +c.dataset.ii, id = c.dataset.isub;
+    const it = d.items[i]; if (!it) return;
+    it.subs = (it.subs || []).filter(s => s !== id);
+    if (c.checked) it.subs.push(id);
+    reRender(d);
+  });
+
+  /* 已分配 / 未分配，边打边更新 */
+  const alloc = () => {
+    const box = $('bAlloc'); if (!box) return;
+    const tot = num(calcExpr($('bLimit') ? $('bLimit').value : 0) != null
+                    ? calcExpr($('bLimit').value) : ($('bLimit') ? $('bLimit').value : 0));
+    let sum = 0;
+    document.querySelectorAll('.bi-limit').forEach(el => {
+      const v = calcExpr(el.value); sum += (v != null ? v : num(el.value));
+    });
+    const left = tot - sum;
+    box.className = 'balloc' + (left < 0 ? ' bad' : '');
+    box.innerHTML = '分项合计 <b>'+yen(sum)+'</b>　/　总预算 <b>'+yen(tot)+'</b>　→　'
+      + (left >= 0 ? '还没分配 <b>'+yen(left)+'</b>' : '<b>超出总预算 '+yen(-left)+'</b>');
+  };
+  alloc();
+  const bl = $('bLimit'); if (bl) bl.oninput = alloc;
+  document.querySelectorAll('.bi-limit').forEach(el => el.oninput = alloc);
+
+  const sv = $('bSave');
+  if (sv) sv.onclick = () => {
+    const b = readBudForm(cur());
+    if (!b.limit || num(b.limit) <= 0) return alert('先填一个金额（这段时间最多花多少）。');
+    if (b.to < b.from) return alert('结束日期比开始日期还早，改一下。');
+    if (!b.name) b.name = b.from.slice(5).replace('-','/') + ' 起 ' + daysBetween(b.from, b.to) + ' 天';
+    b.items = (b.items || []).filter(it => (it.name||'').trim() || num(it.limit) || (it.subs||[]).length);
+    b.id = (budEdit && budEdit !== 'new') ? budEdit : newBudId();
+    b._t = nowTs();
+    DB.budgets[b.id] = b;
+    budDraft = null; budEdit = null; budCatOpen = null;
+    save(); renderBudget(); toast('预算已保存');
+  };
+
+  const cc = $('bCancel');
+  if (cc) cc.onclick = () => { budDraft = null; budEdit = null; budCatOpen = null; renderBudget(); };
+
+  const dl = $('bDel');
+  if (dl) dl.onclick = () => {
+    if (!confirm('删掉这个预算？账目本身不会动。')) return;
+    DB.tomb['b:' + budEdit] = nowTs();
+    delete DB.budgets[budEdit];
+    budDraft = null; budEdit = null; budCatOpen = null;
+    save(); renderBudget(); toast('已删除');
+  };
+
+  /* ---- 卡片上的按钮 ---- */
+  document.querySelectorAll('[data-bedit]').forEach(x => x.onclick = () => {
+    budDraft = null; budCatOpen = null; budEdit = x.dataset.bedit; renderBudget();
+  });
+  document.querySelectorAll('[data-bcopy]').forEach(x => x.onclick = () => {
+    const o = DB.budgets[x.dataset.bcopy]; if (!o) return;
+    const len = daysBetween(o.from, o.to);
+    const from = ymd(addDays(parseYmd(o.to), 1));
+    budDraft = { name:o.name, from:from, to:ymd(addDays(parseYmd(from), len - 1)),
+                 limit:o.limit, subs:o.subs,
+                 items: budItems(o).map(it => ({ name:it.name, limit:it.limit, subs:(it.subs||[]).slice() })) };
+    budEdit = 'new'; budCatOpen = null; renderBudgetKeepDraft(budDraft);
+  });
+  document.querySelectorAll('[data-bsee]').forEach(x => x.onclick = () => {
+    const o = DB.budgets[x.dataset.bsee]; if (!o) return;
+    setQ({ from:o.from, to:o.to, subs:(o.subs && o.subs.length) ? o.subs.slice() : ALLSUBS.slice() });
+    view = 'query'; render();
+  });
+}
+
+/* 新建/复制时，表单里的临时内容（还没保存） */
+let budDraft = null;
+let budCatOpen = null;                 // 哪个分项正展开着分类选择
+const numStr = v => { const c = calcExpr(v); return String(c != null ? c : (v || '')).trim(); };
+
+function readBudForm(base){
+  const $ = id => document.getElementById(id);
+  const subs = [];
+  document.querySelectorAll('input[data-bsub]').forEach(c => { if (c.checked) subs.push(c.dataset.bsub); });
+  const limited = $('bLimitCat') && $('bLimitCat').checked;
+
+  /* 分项：名称和金额从输入框读，分类从上一轮的 draft/记录里取（选分类是另外的动作） */
+  const prev = budItems(base);
+  const rows = document.querySelectorAll('.bitem');
+  let items;
+  if (rows.length) {
+    items = Array.prototype.map.call(rows, row => {
+      const i = +row.dataset.i;
+      const nameEl = row.querySelector('.bi-name'), limEl = row.querySelector('.bi-limit');
+      return {
+        name:  nameEl ? nameEl.value.trim() : ((prev[i] || {}).name || ''),
+        limit: limEl  ? numStr(limEl.value) : ((prev[i] || {}).limit || ''),
+        subs:  ((prev[i] || {}).subs || []).slice()
+      };
+    });
+  } else items = prev.map(it => ({ name:it.name, limit:it.limit, subs:(it.subs||[]).slice() }));
+
+  return {
+    name:  ($('bName') ? $('bName').value : base.name || '').trim(),
+    from:  $('bFrom') ? $('bFrom').value : base.from,
+    to:    $('bTo')   ? $('bTo').value   : base.to,
+    limit: $('bLimit') ? numStr($('bLimit').value) : (base.limit || ''),
+    subs:  limited ? subs : null,
+    items: items
+  };
+}
+function renderBudgetKeepDraft(draft){
+  const keep = budEdit;
+  const saved = (keep && keep !== 'new') ? DB.budgets[keep] : null;
+  if (saved) { const tmp = Object.assign({}, saved, draft); tmp.id = saved.id;
+               app.innerHTML = budFormHTML(tmp); bindBudget(); return; }
+  app.innerHTML = budFormHTML(draft || {});
+  bindBudget();
 }
 
 /* =====================================================================
@@ -1198,6 +1699,14 @@ function mergeMonRec(x, y){
   out.t._note = Math.max(nx, ny);
   return out;
 }
+/* 预算是一条小记录，不像「一天」那样要拆成好几块，所以整条比时间戳，晚的赢 */
+function mergeBudRec(x, y){
+  if (!x) return y;
+  if (!y) return x;
+  const tx = x._t || 0, ty = y._t || 0;
+  if (tx !== ty) return tx > ty ? x : y;
+  return canon(x) <= canon(y) ? x : y;
+}
 function mergeDB(a, b){
   a = a || emptyDB(); b = b || emptyDB();
   const out = emptyDB();
@@ -1217,6 +1726,13 @@ function mergeDB(a, b){
     if ((out.tomb['m:'+k]||0) >= Math.max(rec._t||0, 1)) continue;
     out.months[k] = rec;
   }
+  const bk = {}; for (const k in (a.budgets||{})) bk[k]=1; for (const k in (b.budgets||{})) bk[k]=1;
+  for (const k in bk) {
+    const rec = mergeBudRec((a.budgets||{})[k], (b.budgets||{})[k]);
+    if (!rec) continue;
+    if ((out.tomb['b:'+k]||0) >= Math.max(rec._t||0, 1)) continue;
+    out.budgets[k] = rec;
+  }
   const cut = nowTs() - 180*864e5;                              // 半年前的墓碑清掉
   for (const k in out.tomb) if (out.tomb[k] < cut) delete out.tomb[k];
   return out;
@@ -1224,8 +1740,9 @@ function mergeDB(a, b){
 function sig(db){
   const d = Object.keys(db.days||{}).sort().map(k => [k, db.days[k]]);
   const m = Object.keys(db.months||{}).sort().map(k => [k, db.months[k]]);
+  const b = Object.keys(db.budgets||{}).sort().map(k => [k, db.budgets[k]]);
   const t = Object.keys(db.tomb||{}).sort().map(k => [k, db.tomb[k]]);
-  return JSON.stringify([d, m, t]);
+  return JSON.stringify([d, m, b, t]);
 }
 
 /* ---- 传输通道 A：局域网 ---- */
@@ -1390,8 +1907,9 @@ function isTyping(){
 function cloudGap(local, remote){
   let n = 0;
   remote = remote || emptyDB();
-  for (const k in (local.days || {}))   if (!(remote.days || {})[k])   n++;
-  for (const k in (local.months || {})) if (!(remote.months || {})[k]) n++;
+  for (const k in (local.days || {}))    if (!(remote.days || {})[k])    n++;
+  for (const k in (local.months || {}))  if (!(remote.months || {})[k])  n++;
+  for (const k in (local.budgets || {})) if (!(remote.budgets || {})[k]) n++;
   return n;
 }
 
@@ -1551,6 +2069,7 @@ function render(){
   else if (view === 'week') renderWeek();
   else if (view === 'month')renderMonth();
   else if (view === 'year') renderYear();
+  else if (view === 'budget')renderBudget();
   else if (view === 'query')renderQuery();
   else                      renderData();
   app.insertAdjacentHTML('afterbegin', warnHTML());
@@ -1870,6 +2389,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
   cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
   ALLQ, QGROUPS, yen, subLabel, renderQuery,
+  budStat, spentIn, daysBetween, budList, newBudId, mergeBudRec,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();
