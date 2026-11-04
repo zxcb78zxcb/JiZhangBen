@@ -217,7 +217,7 @@ function rangeIncome(from, to){ return rangeSub(from, to, INC); }
 function monthObj(m, create){
   let o = DB.months[m];
   if (!o && create) {
-    o = DB.months[m] = { fixed: DEFAULT_FIXED.map(n=>({n:n, a:''})), note:'' };
+    o = DB.months[m] = { fixed: DEFAULT_FIXED.map(n=>({n:n, a:''})), note:'', income:'' };
     save();
   }
   return o;
@@ -232,6 +232,10 @@ function monthRange(m){
 function monthSpend(m){ const r = monthRange(m); return rangeSpend(r[0], r[1]) + fixedSum(m); }
 function monthVar(m){ const r = monthRange(m); return rangeSpend(r[0], r[1]); }
 function monthIncome(m){ const r = monthRange(m); return rangeIncome(r[0], r[1]); }
+/* 用户自己填的「本月总收入」（工资之类），和记账里 11.收入 那项是两回事，要加起来 */
+function monthSetIncome(m){ const o = DB.months[m]; return num((o && o.income) || 0); }
+function monthAllIncome(m){ return monthSetIncome(m) + monthIncome(m); }
+function monthLeft(m){ return monthAllIncome(m) - monthSpend(m); }   // 这个月还剩多少钱
 function prevMonth(m){
   let y = +m.slice(0,4), mo = +m.slice(5,7) - 1;
   if (mo === 0) { mo = 12; y--; }
@@ -258,6 +262,20 @@ const app = document.getElementById('app');
 /* =====================================================================
    视图：日
    ===================================================================== */
+/* 「本月还剩」那一格：没设过本月总收入就提示去设 */
+function leftBoxHTML(m, id){
+  const set = monthSetIncome(m);
+  const left = monthLeft(m);
+  if (!set && !monthIncome(m)) {
+    return '<div class="box bal setme" data-goincome="'+m+'">'
+         + '<div class="lb">本月还剩</div>'
+         + '<div class="vl" id="'+(id||'')+'" style="font-size:14px;line-height:1.5">点这里<br>设本月收入</div></div>';
+  }
+  return '<div class="box bal'+(left < 0 ? ' neg' : '')+'" data-goincome="'+m+'">'
+       + '<div class="lb">本月还剩</div>'
+       + '<div class="vl" id="'+(id||'')+'">'+yen(left)+'</div></div>';
+}
+
 function rowHTML(sid, i, r){
   return '<div class="row" data-sid="'+sid+'" data-i="'+i+'">'
     + '<input class="rn" type="text" placeholder="项目名称" value="'+esc(r.n)+'">'
@@ -290,7 +308,7 @@ function renderDay(){
   h += '<div class="sumbar">'
      +  '<div class="box"><div class="lb">当日支出</div><div class="vl" id="tSpend">'+yen(sp)+'</div></div>'
      +  '<div class="box inc"><div class="lb">当日收入</div><div class="vl" id="tInc">'+yen(ic)+'</div></div>'
-     +  '<div class="box bal"><div class="lb">当日结余</div><div class="vl" id="tBal">'+yen(ic-sp)+'</div></div>'
+     +  leftBoxHTML(ymOf(cur), 'tBal')
      + '</div>';
 
   CATS.forEach((c, idx) => {
@@ -329,8 +347,9 @@ function quickHTML(){
        + '<div class="kv"><span>本周收入</span><b style="color:var(--blue)">'+yen(wI)+'</b></div>'
        + '<div class="kv"><span>本周结余</span><b style="color:var(--accent)">'+yen(wI-wS)+'</b></div>'
        + '<div class="kv"><span>本月支出（含固定支出 '+yen(fixedSum(m))+'）</span><b>'+yen(mS)+'</b></div>'
-       + '<div class="kv"><span>本月收入</span><b style="color:var(--blue)">'+yen(mI)+'</b></div>'
-       + '<div class="kv"><span>本月结余</span><b style="color:var(--accent)">'+yen(mI-mS)+'</b></div>';
+       + '<div class="kv"><span>本月设定总收入</span><b style="color:var(--blue)">'+yen(monthSetIncome(m))+'</b></div>'
+       + '<div class="kv"><span>本月记账收入</span><b style="color:var(--blue)">'+yen(mI)+'</b></div>'
+       + '<div class="kv"><span>本月还剩</span><b style="color:var(--accent)">'+yen(monthLeft(m))+'</b></div>';
 }
 function refreshDayTotals(){
   const ds = ymd(cur);
@@ -345,6 +364,10 @@ function refreshDayTotals(){
   const a = document.getElementById('tSpend'), b = document.getElementById('tInc'), c2 = document.getElementById('tBal');
   if (a) a.textContent = yen(sp);
   if (b) b.textContent = yen(ic);
+  const lb = document.querySelector('.box.bal[data-goincome]');
+  if (lb) { const nb = document.createElement('div');
+            nb.innerHTML = leftBoxHTML(ymOf(cur), 'tBal');
+            lb.parentNode.replaceChild(nb.firstChild, lb); }
   if (c2) c2.textContent = yen(ic - sp);
 }
 
@@ -366,8 +389,10 @@ function renderWeek(){
   h += '<div class="sumbar">'
      +  '<div class="box"><div class="lb">本周支出</div><div class="vl">'+yen(sp)+'</div></div>'
      +  '<div class="box inc"><div class="lb">本周收入</div><div class="vl">'+yen(ic)+'</div></div>'
-     +  '<div class="box bal"><div class="lb">本周结余</div><div class="vl">'+yen(ic-sp)+'</div></div>'
+     +  leftBoxHTML(ymOf(cur))
      + '</div>';
+  h += '<div class="hint" style="margin:-4px 2px 10px">本周收支差 '
+     + yen(ic-sp) + '　（第三格是整个 '+ymOf(cur).replace('-',' 年 ')+' 月还剩多少）</div>';
 
   h += '<section class="card"><h3>各项目 · 每日明细</h3><div class="tablewrap"><table><thead><tr>'
      + '<th class="name">项目</th>'
@@ -421,12 +446,30 @@ function renderMonth(){
 
   const varS = monthVar(m), fixS = fixedSum(m), totS = varS + fixS, incS = monthIncome(m);
   const pVar = monthVar(pm), pFix = fixedSum(pm), pTot = pVar + pFix, pInc = monthIncome(pm);
+  const setI = monthSetIncome(m), allI = setI + incS, left = allI - totS;
+  const pSet = monthSetIncome(pm), pAll = pSet + pInc;
 
   h += '<div class="sumbar">'
      +  '<div class="box"><div class="lb">月支出合计</div><div class="vl" id="mTot">'+yen(totS)+'</div></div>'
-     +  '<div class="box inc"><div class="lb">月收入合计</div><div class="vl">'+yen(incS)+'</div></div>'
-     +  '<div class="box bal"><div class="lb">月结余</div><div class="vl" id="mBal">'+yen(incS-totS)+'</div></div>'
+     +  '<div class="box inc"><div class="lb">月收入合计</div><div class="vl" id="mInc">'+yen(allI)+'</div></div>'
+     +  '<div class="box bal'+(left<0?' neg':'')+'"><div class="lb">本月还剩</div>'
+     +    '<div class="vl" id="mBal">'+yen(left)+'</div></div>'
      + '</div>';
+
+  /* --- 本月总收入 --- */
+  h += '<section class="card"><h3>本月总收入'
+     + '<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">工资、固定进账</span></h3><div class="body">';
+  h += '<input class="tinp" id="monIncome" type="text" inputmode="decimal" placeholder="例：280000"'
+     + ' value="'+esc((DB.months[m]||{}).income||'')+'">';
+  h += '<div class="hint">能写算式，比如 <b>250000+30000</b>，离开输入框自动算。每个月各填各的。</div>';
+  h += '<div class="kv"><span>① 这里填的总收入</span><b style="color:var(--blue)">'+yen(setI)+'</b></div>';
+  h += '<div class="kv"><span>② 记账「11.收入」那项</span><b style="color:var(--blue)">'+yen(incS)+'</b></div>';
+  h += '<div class="kv"><span>收入合计 ①＋②</span><b style="color:var(--blue)">'+yen(allI)+'</b></div>';
+  h += '<div class="kv"><span>本月支出（变动 '+yen(varS)+' ＋ 固定 '+yen(fixS)+'）</span><b>'+yen(totS)+'</b></div>';
+  h += '<div class="kv"><span><b>本月还剩</b></span><b style="font-size:17px;color:'
+     + (left<0?'var(--up)':'var(--accent)')+'">'+yen(left)+'</b></div>';
+  if (!setI && !incS) h += '<div class="hint" style="color:var(--up)">还没填本月总收入，「还剩」就等于负的支出。</div>';
+  h += '</div></section>';
 
   /* --- 固定支出 --- */
   const fx = fixedRows(m);
@@ -463,14 +506,16 @@ function renderMonth(){
   h += '<tr class="total"><td class="name">变动支出合计</td>'+cell(varS)+cell(pVar)+'<td class="n '+p1.c+'">'+diffTxt(varS,pVar)+'</td><td class="n '+p1.c+'">'+p1.t+'</td></tr>';
   h += '<tr class="total"><td class="name">固定支出合计</td>'+cell(fixS)+cell(pFix)+'<td class="n '+p2.c+'">'+diffTxt(fixS,pFix)+'</td><td class="n '+p2.c+'">'+p2.t+'</td></tr>';
   h += '<tr class="total"><td class="name">支出总计</td>'+cell(totS)+cell(pTot)+'<td class="n '+p3.c+'">'+diffTxt(totS,pTot)+'</td><td class="n '+p3.c+'">'+p3.t+'</td></tr>';
-  h += '<tr class="inc"><td class="name">11. 收入</td>'+cell(incS)+cell(pInc)+'<td class="n '+p4.c+'">'+diffTxt(incS,pInc)+'</td><td class="n '+p4.c+'">'+p4.t+'</td></tr>';
-  h += '<tr class="bal"><td class="name">结余</td>'+cell(incS-totS)+cell(pInc-pTot)+'<td class="n">'+diffTxt(incS-totS,pInc-pTot)+'</td><td class="n">—</td></tr>';
+  const p5 = pct(setI, pSet, true);
+  h += '<tr class="inc"><td class="name">设定总收入</td>'+cell(setI)+cell(pSet)+'<td class="n '+p5.c+'">'+diffTxt(setI,pSet)+'</td><td class="n '+p5.c+'">'+p5.t+'</td></tr>';
+  h += '<tr class="inc"><td class="name">11. 记账收入</td>'+cell(incS)+cell(pInc)+'<td class="n '+p4.c+'">'+diffTxt(incS,pInc)+'</td><td class="n '+p4.c+'">'+p4.t+'</td></tr>';
+  h += '<tr class="bal"><td class="name">本月还剩</td>'+cell(allI-totS)+cell(pAll-pTot)+'<td class="n">'+diffTxt(allI-totS,pAll-pTot)+'</td><td class="n">—</td></tr>';
   h += '</tbody></table></div>'
      + '<div class="body"><div class="hint"><span class="up">红色</span>＝比上月不划算（支出变多 / 收入变少）；<span class="down">绿色</span>＝比上月好。</div></div></section>';
 
   /* --- 每周小计 --- */
   h += '<section class="card"><h3>本月各周小计</h3><div class="tablewrap"><table><thead><tr>'
-     + '<th class="name">周</th><th class="n">支出</th><th class="n">收入</th><th class="n">结余</th></tr></thead><tbody>';
+     + '<th class="name">周</th><th class="n">支出</th><th class="n">记账收入</th><th class="n">收支差</th></tr></thead><tbody>';
   const y = +m.slice(0,4), mo = +m.slice(5,7), ld = lastDay(y,mo);
   const seen = {};
   for (let d=1; d<=ld; d++) {
@@ -511,11 +556,15 @@ function renderYear(){
         + '</div>';
 
   const totS = ms.reduce((t,m)=>t+monthSpend(m),0);
-  const totI = ms.reduce((t,m)=>t+monthIncome(m),0);
+  const totSet = ms.reduce((t,m)=>t+monthSetIncome(m),0);
+  const totRec = ms.reduce((t,m)=>t+monthIncome(m),0);
+  const totI = totSet + totRec;
   h += '<section class="card"><div class="big"><div class="lb">'+y+' 年 支出总额</div><div class="vl">'+yen(totS)+'</div></div>'
      + '<div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line)">'
      + '<div class="big inc" style="border-right:1px solid var(--line)"><div class="lb">年收入</div><div class="vl">'+yen(totI)+'</div></div>'
-     + '<div class="big bal"><div class="lb">年结余</div><div class="vl">'+yen(totI-totS)+'</div></div></div></section>';
+     + '<div class="big bal"><div class="lb">年还剩</div><div class="vl">'+yen(totI-totS)+'</div></div></div></section>'
+     + '<div class="hint" style="margin:-6px 2px 12px">年收入 = 各月「本月总收入」合计 '+yen(totSet)
+     + '　＋　记账「11.收入」合计 '+yen(totRec)+'</div>';
 
   h += '<section class="card"><h3>各项目 · 逐月一览</h3><div class="tablewrap"><table><thead><tr>'
      + '<th class="name">项目</th>' + ms.map((m,i)=>'<th class="n">'+(i+1)+'月</th>').join('') + '<th class="n">年合计</th></tr></thead><tbody>';
@@ -535,12 +584,15 @@ function renderYear(){
   const vFix = ms.map(fixedSum);
   const vVar = ms.map(monthVar);
   const vTot = ms.map(monthSpend);
-  const vInc = ms.map(monthIncome);
+  const vSet = ms.map(monthSetIncome);
+  const vRec = ms.map(monthIncome);
+  const vInc = ms.map((m,i)=>vSet[i]+vRec[i]);
   h += '<tr class="total"><td class="name">变动支出合计</td>'+vVar.map(cell).join('')+cell(vVar.reduce((a,b)=>a+b,0))+'</tr>';
   h += '<tr class="total"><td class="name">固定支出合计</td>'+vFix.map(cell).join('')+cell(vFix.reduce((a,b)=>a+b,0))+'</tr>';
   h += '<tr class="total"><td class="name">支出总计</td>'+vTot.map(cell).join('')+cell(totS)+'</tr>';
-  h += '<tr class="inc"><td class="name">11. 收入</td>'+vInc.map(cell).join('')+cell(totI)+'</tr>';
-  h += '<tr class="bal"><td class="name">结余</td>'+ms.map((m,i)=>cell(vInc[i]-vTot[i])).join('')+cell(totI-totS)+'</tr>';
+  h += '<tr class="inc"><td class="name">设定总收入</td>'+vSet.map(cell).join('')+cell(totSet)+'</tr>';
+  h += '<tr class="inc"><td class="name">11. 记账收入</td>'+vRec.map(cell).join('')+cell(totRec)+'</tr>';
+  h += '<tr class="bal"><td class="name">还剩</td>'+ms.map((m,i)=>cell(vInc[i]-vTot[i])).join('')+cell(totI-totS)+'</tr>';
   h += '</tbody></table></div></section>';
 
   h += '<section class="card"><h3>各月分析笔记</h3><div class="body">';
@@ -1663,7 +1715,7 @@ function noteScore(s){ return s == null ? -1 : String(s).trim().length; }
 
 /* 按「这一天的某个分类」分别合并，同一天里手机改交通、电脑改买菜可以共存 */
 const EMPTY_DAY = { rows:{}, note:'', _t:0, t:{} };
-const EMPTY_MON = { fixed:[], note:'', _t:0, t:{} };
+const EMPTY_MON = { fixed:[], note:'', income:'', _t:0, t:{} };
 function mergeDayRec(x, y){
   if (!x && !y) return null;
   x = x || EMPTY_DAY; y = y || EMPTY_DAY;      // 单边也走同一条路，保证输出形状稳定（幂等）
@@ -1688,7 +1740,12 @@ function mergeDayRec(x, y){
 function mergeMonRec(x, y){
   if (!x && !y) return null;
   x = x || EMPTY_MON; y = y || EMPTY_MON;
-  const out = { fixed:[], note:'', _t: Math.max(x._t||0, y._t||0), t:{} };
+  const out = { fixed:[], note:'', income:'', _t: Math.max(x._t||0, y._t||0), t:{} };
+  // 本月总收入是独立一格：一边改收入、一边改固定支出，两边都要保住
+  const ix = grpT(x, 'income', num(x.income) > 0), iy = grpT(y, 'income', num(y.income) > 0);
+  out.income = ix !== iy ? (ix > iy ? (x.income||'') : (y.income||''))
+                         : tiePick(x.income||'', y.income||'', noteScore);
+  out.t.income = Math.max(ix, iy);
   const fx = grpT(x, 'fixed', rowsScore(x.fixed) > 0), fy = grpT(y, 'fixed', rowsScore(y.fixed) > 0);
   out.fixed = fx !== fy ? (fx > fy ? (x.fixed||[]) : (y.fixed||[]))
                         : tiePick(x.fixed||[], y.fixed||[], rowsScore);
@@ -2088,6 +2145,14 @@ document.getElementById('tabs').addEventListener('click', e => {
 
 /* 导航 */
 app.addEventListener('click', e => {
+  const gi = e.target.closest('[data-goincome]');
+  if (gi) {
+    commitFocused(); pruneDay(ymd(cur));
+    curM = gi.dataset.goincome; view = 'month'; render();
+    const el = document.getElementById('monIncome');
+    if (el) { el.focus(); try { el.scrollIntoView({block:'center'}); } catch(x){} }
+    return;
+  }
   const nb = e.target.closest('[data-nav]');
   if (nb) {
     const k = nb.dataset.nav;
@@ -2142,6 +2207,10 @@ app.addEventListener('input', e => {
     d.note = t.value; touchDay(ymd(cur), '_note'); save(); return;
   }
   if (t.id === 'monNote') { monthObj(curM,true).note = t.value; touchMonth(curM,'_note'); save(); return; }
+  if (t.id === 'monIncome') {
+    monthObj(curM,true).income = t.value; touchMonth(curM,'income'); save();
+    refreshMonthFixed(); return;
+  }
   const row = t.closest('.row'); if (!row) return;
   if (row.dataset.fix !== undefined) {
     const o = monthObj(curM,true), i = +row.dataset.fix;
@@ -2158,7 +2227,9 @@ app.addEventListener('input', e => {
 
 /* ---- 金额栏算式：380+520 → 900 ---- */
 function isAmountInput(el){
-  return !!(el && el.classList && (el.classList.contains('ra') || el.classList.contains('fa')));
+  if (!el) return false;
+  if (el.id === 'monIncome') return true;              // 本月总收入也能写算式
+  return !!(el.classList && (el.classList.contains('ra') || el.classList.contains('fa')));
 }
 /* 把输入框里的算式换成结果并写回数据 */
 function commitCalc(el){
@@ -2361,10 +2432,11 @@ function focusRow(sid, i){
 }
 function refreshMonthFixed(){
   const fixS = fixedSum(curM);
-  const varS = monthVar(curM), incS = monthIncome(curM);
+  const varS = monthVar(curM), allI = monthAllIncome(curM);
   const a = document.getElementById('fixTotal'); if (a) a.textContent = yen(fixS);
   const b = document.getElementById('mTot');    if (b) b.textContent = yen(varS + fixS);
-  const c = document.getElementById('mBal');    if (c) c.textContent = yen(incS - varS - fixS);
+  const i = document.getElementById('mInc');    if (i) i.textContent = yen(allI);
+  const c = document.getElementById('mBal');    if (c) c.textContent = yen(allI - varS - fixS);
 }
 
 /* 启动 */
@@ -2390,6 +2462,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, rende
   cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
   ALLQ, QGROUPS, yen, subLabel, renderQuery,
   budStat, spentIn, daysBetween, budList, newBudId, mergeBudRec,
+  monthSetIncome, monthAllIncome, monthLeft,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();

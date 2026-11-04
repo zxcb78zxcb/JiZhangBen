@@ -117,6 +117,10 @@ main{max-width:940px;margin:0 auto;padding:12px 12px 40px;}
 .sumbar .box .vl{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px;}
 .sumbar .box.inc .vl{color:var(--blue);}
 .sumbar .box.bal .vl{color:var(--accent);}
+.sumbar .box.bal.neg .vl{color:var(--up);}
+.sumbar .box[data-goincome]{cursor:pointer;}
+.sumbar .box.setme{border-style:dashed;border-color:var(--accent);background:#fdfaf3;}
+.sumbar .box.setme .vl{color:var(--accent);font-weight:700;}
 
 /* ---------- 小分类 ---------- */
 .sub+.sub{margin-top:10px;border-top:1px dashed var(--line2);padding-top:9px;}
