@@ -144,7 +144,9 @@ main{max-width:940px;margin:0 auto;padding:12px 12px 40px;}
 }
 .row input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,109,59,.13);}
 .row input.ra{text-align:right;font-variant-numeric:tabular-nums;}
-.income .row input,.income .row input.ra{color:var(--blue);}
+.income .row input,.income .row input.ra,.income .row input.ia{color:var(--blue);}
+.income .row input.ia{text-align:right;font-variant-numeric:tabular-nums;}
+.inclist .row input:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(18,87,201,.13);}
 .income .row input:focus{border-color:var(--blue);box-shadow:0 0 0 2px rgba(18,87,201,.13);}
 .row .del{
   appearance:none;border:0;background:transparent;color:#c3bdb0;

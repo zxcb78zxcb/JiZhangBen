@@ -42,8 +42,9 @@ function loadDB() {
 }
 const nowTs = () => Date.now();
 let _t = null;
-function save() { clearTimeout(_t); _t = setTimeout(saveNow, 200); schedSync(); }
+function save() { clearCarry(); clearTimeout(_t); _t = setTimeout(saveNow, 200); schedSync(); }
 function saveNow() {
+  clearCarry();
   clearTimeout(_t);
   try { localStorage.setItem(KEY, JSON.stringify(DB)); }
   catch (e) { toast('保存失败：浏览器存储空间不足'); }
@@ -217,7 +218,7 @@ function rangeIncome(from, to){ return rangeSub(from, to, INC); }
 function monthObj(m, create){
   let o = DB.months[m];
   if (!o && create) {
-    o = DB.months[m] = { fixed: DEFAULT_FIXED.map(n=>({n:n, a:''})), note:'', income:'' };
+    o = DB.months[m] = { fixed: DEFAULT_FIXED.map(n=>({n:n, a:''})), note:'', income:[] };
     save();
   }
   return o;
@@ -232,10 +233,48 @@ function monthRange(m){
 function monthSpend(m){ const r = monthRange(m); return rangeSpend(r[0], r[1]) + fixedSum(m); }
 function monthVar(m){ const r = monthRange(m); return rangeSpend(r[0], r[1]); }
 function monthIncome(m){ const r = monthRange(m); return rangeIncome(r[0], r[1]); }
-/* 用户自己填的「本月总收入」（工资之类），和记账里 11.收入 那项是两回事，要加起来 */
-function monthSetIncome(m){ const o = DB.months[m]; return num((o && o.income) || 0); }
+/* 本月收入来源列表。老数据里 income 是一个数字字符串，这里统一成 [{n,a}] */
+function incomeRows(m){
+  const o = DB.months[m];
+  if (!o) return [];
+  const v = o.income;
+  if (Array.isArray(v)) return v;
+  if (v === undefined || v === null || v === '') return [];
+  return [{ n:'收入', a:String(v) }];
+}
+function monthSetIncome(m){ return incomeRows(m).reduce((t,r)=>t+num(r.a), 0); }
 function monthAllIncome(m){ return monthSetIncome(m) + monthIncome(m); }
-function monthLeft(m){ return monthAllIncome(m) - monthSpend(m); }   // 这个月还剩多少钱
+
+function nextMonth(m){
+  let y = +m.slice(0,4), mo = +m.slice(5,7) + 1;
+  if (mo === 13) { mo = 1; y++; }
+  return y + '-' + pad(mo);
+}
+/* 所有「有东西」的月份：记过账的、或者填过月度信息的 */
+function monthKeys(){
+  const set = {};
+  for (const k in DB.months) set[k] = 1;
+  for (const k in DB.days)   set[k.slice(0,7)] = 1;
+  return Object.keys(set).sort();
+}
+
+/* ---- 结转：这个月没花完的钱，自动滚到下个月 ----
+   上月结转 = 从最早那个月一路滚过来的累计余额。
+   所以翻到还没记账的未来月份时，看到的就是「结转下来的钱 − 这个月已填的固定支出」。*/
+let _carry = {};
+function clearCarry(){ _carry = {}; }
+function carryIn(m){
+  if (_carry[m] !== undefined) return _carry[m];
+  const ks = monthKeys();
+  if (!ks.length || m <= ks[0]) return (_carry[m] = 0);
+  let c = 0, cur = ks[0], guard = 0;
+  while (cur < m && guard++ < 600) {
+    c += monthAllIncome(cur) - monthSpend(cur);
+    cur = nextMonth(cur);
+  }
+  return (_carry[m] = c);
+}
+function monthLeft(m){ return carryIn(m) + monthAllIncome(m) - monthSpend(m); }
 function prevMonth(m){
   let y = +m.slice(0,4), mo = +m.slice(5,7) - 1;
   if (mo === 0) { mo = 12; y--; }
@@ -446,7 +485,7 @@ function renderMonth(){
 
   const varS = monthVar(m), fixS = fixedSum(m), totS = varS + fixS, incS = monthIncome(m);
   const pVar = monthVar(pm), pFix = fixedSum(pm), pTot = pVar + pFix, pInc = monthIncome(pm);
-  const setI = monthSetIncome(m), allI = setI + incS, left = allI - totS;
+  const setI = monthSetIncome(m), allI = setI + incS, left = monthLeft(m);
   const pSet = monthSetIncome(pm), pAll = pSet + pInc;
 
   h += '<div class="sumbar">'
@@ -456,19 +495,37 @@ function renderMonth(){
      +    '<div class="vl" id="mBal">'+yen(left)+'</div></div>'
      + '</div>';
 
-  /* --- 本月总收入 --- */
-  h += '<section class="card"><h3>本月总收入'
-     + '<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">工资、固定进账</span></h3><div class="body">';
-  h += '<input class="tinp" id="monIncome" type="text" inputmode="decimal" placeholder="例：280000"'
-     + ' value="'+esc((DB.months[m]||{}).income||'')+'">';
-  h += '<div class="hint">能写算式，比如 <b>250000+30000</b>，离开输入框自动算。每个月各填各的。</div>';
-  h += '<div class="kv"><span>① 这里填的总收入</span><b style="color:var(--blue)">'+yen(setI)+'</b></div>';
-  h += '<div class="kv"><span>② 记账「11.收入」那项</span><b style="color:var(--blue)">'+yen(incS)+'</b></div>';
-  h += '<div class="kv"><span>收入合计 ①＋②</span><b style="color:var(--blue)">'+yen(allI)+'</b></div>';
-  h += '<div class="kv"><span>本月支出（变动 '+yen(varS)+' ＋ 固定 '+yen(fixS)+'）</span><b>'+yen(totS)+'</b></div>';
-  h += '<div class="kv"><span><b>本月还剩</b></span><b style="font-size:17px;color:'
+  /* --- 本月收入（可追加，带来源） --- */
+  const inc = incomeRows(m);
+  h += '<section class="card income"><h3><span>本月收入</span>'
+     + '<span style="font-weight:400;font-size:12px;color:var(--ink-soft)">工资、副业、奖金…</span></h3><div class="body">';
+  h += '<div class="rowhead"><div>来源</div><div class="r">金额</div><div></div></div><div class="inclist">';
+  h += (inc.length ? inc : [{n:'',a:''}]).map((r2,i) =>
+        '<div class="row" data-inc="'+i+'">'
+      + '<input class="in" type="text" placeholder="来源（工资 / 副业 / 奖金）" value="'+esc(r2.n||'')+'">'
+      + '<input class="ia" type="text" inputmode="decimal" placeholder="0" value="'+esc(r2.a||'')+'">'
+      + '<button class="del" data-delinc="'+i+'" title="删除这一行">×</button></div>').join('');
+  h += '</div><button class="addrow" data-addinc="1">＋ 添加收入来源（也可在「来源」栏按回车）</button>';
+  h += '<div class="cattotal"><span>本月收入合计</span><b id="incTotal">'+yen(setI)+'</b></div>';
+  h += '<div class="hint">金额栏能写算式（<b>250000+30000</b>），手机上点进去会浮出 ＋－×÷ 符号条。<br>'
+     + '第一次用的话，可以加一行「<b>期初余额</b>」把开始记账前手头的钱填进去。</div>';
+  h += '</div></section>';
+
+  /* --- 这个月的账怎么来的 --- */
+  const cIn = carryIn(m);
+  h += '<section class="card"><h3>本月余额怎么算出来的</h3><div class="body">';
+  h += '<div class="kv"><span>上月结转</span><b style="color:'+(cIn<0?'var(--up)':'var(--accent)')+'">'+yen(cIn)+'</b></div>';
+  h += '<div class="kv"><span>＋ 本月收入（'+inc.filter(r=>num(r.a)).length+' 笔）</span><b style="color:var(--blue)">'+yen(setI)+'</b></div>';
+  h += '<div class="kv"><span>＋ 记账「11.收入」</span><b style="color:var(--blue)">'+yen(incS)+'</b></div>';
+  h += '<div class="kv"><span><b>可用合计</b></span><b>'+yen(cIn+allI)+'</b></div>';
+  h += '<div class="kv"><span>－ 变动支出</span><b>'+yen(varS)+'</b></div>';
+  h += '<div class="kv"><span>－ 固定支出</span><b>'+yen(fixS)+'</b></div>';
+  h += '<div class="kv" style="border-top:1.5px solid var(--line);margin-top:4px;padding-top:9px">'
+     + '<span><b>本月还剩 → 结转下月</b></span><b style="font-size:18px;color:'
      + (left<0?'var(--up)':'var(--accent)')+'">'+yen(left)+'</b></div>';
-  if (!setI && !incS) h += '<div class="hint" style="color:var(--up)">还没填本月总收入，「还剩」就等于负的支出。</div>';
+  if (!setI && !incS && !cIn) {
+    h += '<div class="hint" style="color:var(--up)">还没填过任何收入，所以「还剩」就等于负的支出。</div>';
+  }
   h += '</div></section>';
 
   /* --- 固定支出 --- */
@@ -509,7 +566,8 @@ function renderMonth(){
   const p5 = pct(setI, pSet, true);
   h += '<tr class="inc"><td class="name">设定总收入</td>'+cell(setI)+cell(pSet)+'<td class="n '+p5.c+'">'+diffTxt(setI,pSet)+'</td><td class="n '+p5.c+'">'+p5.t+'</td></tr>';
   h += '<tr class="inc"><td class="name">11. 记账收入</td>'+cell(incS)+cell(pInc)+'<td class="n '+p4.c+'">'+diffTxt(incS,pInc)+'</td><td class="n '+p4.c+'">'+p4.t+'</td></tr>';
-  h += '<tr class="bal"><td class="name">本月还剩</td>'+cell(allI-totS)+cell(pAll-pTot)+'<td class="n">'+diffTxt(allI-totS,pAll-pTot)+'</td><td class="n">—</td></tr>';
+  h += '<tr class="bal"><td class="name">本月还剩（含结转）</td>'+cell(monthLeft(m))+cell(monthLeft(pm))
+     + '<td class="n">'+diffTxt(monthLeft(m),monthLeft(pm))+'</td><td class="n">—</td></tr>';
   h += '</tbody></table></div>'
      + '<div class="body"><div class="hint"><span class="up">红色</span>＝比上月不划算（支出变多 / 收入变少）；<span class="down">绿色</span>＝比上月好。</div></div></section>';
 
@@ -562,7 +620,9 @@ function renderYear(){
   h += '<section class="card"><div class="big"><div class="lb">'+y+' 年 支出总额</div><div class="vl">'+yen(totS)+'</div></div>'
      + '<div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line)">'
      + '<div class="big inc" style="border-right:1px solid var(--line)"><div class="lb">年收入</div><div class="vl">'+yen(totI)+'</div></div>'
-     + '<div class="big bal"><div class="lb">年还剩</div><div class="vl">'+yen(totI-totS)+'</div></div></div></section>'
+     + '<div class="big bal"><div class="lb">年末余额</div><div class="vl">'+yen(monthLeft(y+'-12'))+'</div></div></div></section>'
+     + '<div class="hint" style="margin:-6px 2px 4px">年初结转进来 '+yen(carryIn(y+'-01'))
+     + '　→　年末结转出去 '+yen(monthLeft(y+'-12'))+'</div>'
      + '<div class="hint" style="margin:-6px 2px 12px">年收入 = 各月「本月总收入」合计 '+yen(totSet)
      + '　＋　记账「11.收入」合计 '+yen(totRec)+'</div>';
 
@@ -592,7 +652,8 @@ function renderYear(){
   h += '<tr class="total"><td class="name">支出总计</td>'+vTot.map(cell).join('')+cell(totS)+'</tr>';
   h += '<tr class="inc"><td class="name">设定总收入</td>'+vSet.map(cell).join('')+cell(totSet)+'</tr>';
   h += '<tr class="inc"><td class="name">11. 记账收入</td>'+vRec.map(cell).join('')+cell(totRec)+'</tr>';
-  h += '<tr class="bal"><td class="name">还剩</td>'+ms.map((m,i)=>cell(vInc[i]-vTot[i])).join('')+cell(totI-totS)+'</tr>';
+  h += '<tr class="bal"><td class="name">当月收支差</td>'+ms.map((m,i)=>cell(vInc[i]-vTot[i])).join('')+cell(totI-totS)+'</tr>';
+  h += '<tr class="bal"><td class="name">月末余额（含结转）</td>'+ms.map(m=>cell(monthLeft(m))).join('')+cell(monthLeft(y+'-12'))+'</tr>';
   h += '</tbody></table></div></section>';
 
   h += '<section class="card"><h3>各月分析笔记</h3><div class="body">';
@@ -1711,11 +1772,16 @@ function grpT(rec, key, has){
   return has ? (rec._t || 0) : 0;
 }
 function rowsScore(rs){ return rs ? rs.reduce((n,r)=> n + (((r.n||'').trim()||String(r.a||'').trim()) ? 1 : 0), 0) : -1; }
+function incScore(v){
+  if (Array.isArray(v)) return rowsScore(v);
+  if (v === undefined || v === null || v === '') return -1;
+  return 1;
+}
 function noteScore(s){ return s == null ? -1 : String(s).trim().length; }
 
 /* 按「这一天的某个分类」分别合并，同一天里手机改交通、电脑改买菜可以共存 */
 const EMPTY_DAY = { rows:{}, note:'', _t:0, t:{} };
-const EMPTY_MON = { fixed:[], note:'', income:'', _t:0, t:{} };
+const EMPTY_MON = { fixed:[], note:'', income:[], _t:0, t:{} };
 function mergeDayRec(x, y){
   if (!x && !y) return null;
   x = x || EMPTY_DAY; y = y || EMPTY_DAY;      // 单边也走同一条路，保证输出形状稳定（幂等）
@@ -1740,11 +1806,11 @@ function mergeDayRec(x, y){
 function mergeMonRec(x, y){
   if (!x && !y) return null;
   x = x || EMPTY_MON; y = y || EMPTY_MON;
-  const out = { fixed:[], note:'', income:'', _t: Math.max(x._t||0, y._t||0), t:{} };
-  // 本月总收入是独立一格：一边改收入、一边改固定支出，两边都要保住
-  const ix = grpT(x, 'income', num(x.income) > 0), iy = grpT(y, 'income', num(y.income) > 0);
-  out.income = ix !== iy ? (ix > iy ? (x.income||'') : (y.income||''))
-                         : tiePick(x.income||'', y.income||'', noteScore);
+  const out = { fixed:[], note:'', income:[], _t: Math.max(x._t||0, y._t||0), t:{} };
+  // 本月收入是独立一格：一边改收入、一边改固定支出，两边都要保住
+  const ix = grpT(x, 'income', incScore(x.income) > 0), iy = grpT(y, 'income', incScore(y.income) > 0);
+  const xi = x.income === undefined ? [] : x.income, yi = y.income === undefined ? [] : y.income;
+  out.income = ix !== iy ? (ix > iy ? xi : yi) : tiePick(xi, yi, incScore);
   out.t.income = Math.max(ix, iy);
   const fx = grpT(x, 'fixed', rowsScore(x.fixed) > 0), fy = grpT(y, 'fixed', rowsScore(y.fixed) > 0);
   out.fixed = fx !== fy ? (fx > fy ? (x.fixed||[]) : (y.fixed||[]))
@@ -1829,6 +1895,15 @@ const LAN = {
 
 /* ---- 传输通道 B：GitHub Gist ---- */
 const FILE = 'kakeibo.json';
+/* GitHub 返回的状态码翻译成人话，不然用户只看到「HTTP 401」完全不知道该干嘛 */
+function ghErr(st){
+  if (st === 401) return '令牌失效了（去「数据」页重新填一个）';
+  if (st === 403) return '令牌没有 gist 权限，或被 GitHub 暂时限流了';
+  if (st === 404) return '找不到这个云端存档';
+  if (st === 422) return 'GitHub 拒绝了这次写入';
+  if (st >= 500)  return 'GitHub 服务器出问题了，过会儿自动重试';
+  return 'HTTP ' + st;
+}
 const GIST = {
   name: '云同步',
   enabled(){ return SC.gist.on && !!SC.gist.token; },
@@ -1837,7 +1912,7 @@ const GIST = {
   /* 列出这个账号下所有「记账本」存档，内容多的排前面 */
   async list(){
     const r = await fetch('https://api.github.com/gists?per_page=100', { headers: this.hd(), cache:'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) throw new Error(ghErr(r.status));
     const j = await r.json();
     return (j || [])
       .filter(g => g.files && g.files[FILE])
@@ -1860,7 +1935,7 @@ const GIST = {
       body: JSON.stringify({ description:'记账本数据（私密）', public:false,
         files:{ [FILE]:{ content: JSON.stringify(DB) } } })
     });
-    if (!r.ok) throw new Error('创建失败 HTTP ' + r.status);
+    if (!r.ok) throw new Error('建不了新存档：' + ghErr(r.status));
     const j = await r.json();
     SC.gist.id = j.id; saveSC();
     toast('已新建云端存档');
@@ -1870,7 +1945,7 @@ const GIST = {
     const r = await fetch('https://api.github.com/gists/' + id + '?t=' + nowTs(),
       { headers: this.hd(), cache:'no-store' });
     if (r.status === 404) throw new Error('找不到这个存档（404）');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) throw new Error(ghErr(r.status));
     const j = await r.json();
     const f = j.files && j.files[FILE];
     if (!f) return emptyDB();
@@ -1892,7 +1967,7 @@ const GIST = {
       method:'PATCH', headers: Object.assign({'Content-Type':'application/json'}, this.hd()),
       body: JSON.stringify({ files:{ [FILE]:{ content: JSON.stringify(db) } } })
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) throw new Error(ghErr(r.status));
   }
 };
 
@@ -2085,8 +2160,14 @@ function warnItems(){
     if (p) out.push({ lv:'warn', html:'<b>' + p + ' 项还没传到云端</b>'
       + (online() ? '，正在重试…' : '（现在离线，一有网会自动补传）')
       + '<button class="wbtn" data-sync="1">立刻同步</button>' });
-    if (lastErr) out.push({ lv:'bad', html:'<b>同步出错</b>：' + esc(lastErr)
-      + '<button class="wbtn" data-sync="1">重试</button>' });
+    if (lastErr) {
+      const bad401 = /令牌失效|gist 权限/.test(lastErr);
+      out.push({ lv:'bad', html:'<b>同步出错</b>：' + esc(lastErr)
+        + (bad401 ? '<br>在那之前这台设备看到的是<b>空账本</b>，不是数据没了——'
+                  + '你的记录还在云端，令牌修好就会回来。'
+                  + '<button class="wbtn" data-go="data">去换令牌</button>'
+                  : '<button class="wbtn" data-sync="1">重试</button>') });
+    }
     const localDays = Object.keys(DB.days).length;
     if (SC.cloudDays != null && localDays - SC.cloudDays > 0) {
       out.push({ lv:'bad', html:'<b>云端比本机少 ' + (localDays - SC.cloudDays) + ' 天</b>'
@@ -2171,6 +2252,11 @@ app.addEventListener('click', e => {
   }
   const del = e.target.closest('.del');
   if (del) {
+    if (del.dataset.delinc !== undefined) {
+      const o = monthObj(curM, true);
+      if (!Array.isArray(o.income)) o.income = incomeRows(curM);
+      o.income.splice(+del.dataset.delinc, 1); touchMonth(curM,'income'); save(); renderMonth(); return;
+    }
     if (del.dataset.delfix !== undefined) {
       const o = monthObj(curM, true);
       o.fixed.splice(+del.dataset.delfix, 1); touchMonth(curM,'fixed'); save(); renderMonth(); return;
@@ -2183,6 +2269,14 @@ app.addEventListener('click', e => {
   if (add) {
     const sid = add.dataset.add, i = addRow(ymd(cur), sid);
     renderDay(); focusRow(sid, i); return;
+  }
+  if (e.target.closest('[data-addinc]')) {
+    const o = monthObj(curM, true);
+    if (!Array.isArray(o.income)) o.income = incomeRows(curM);
+    o.income.push({n:'',a:''}); touchMonth(curM,'income'); save(); renderMonth();
+    const list = document.querySelectorAll('.inclist .in');
+    if (list.length) list[list.length-1].focus();
+    return;
   }
   if (e.target.closest('[data-addfix]')) {
     const o = monthObj(curM, true);
@@ -2207,11 +2301,16 @@ app.addEventListener('input', e => {
     d.note = t.value; touchDay(ymd(cur), '_note'); save(); return;
   }
   if (t.id === 'monNote') { monthObj(curM,true).note = t.value; touchMonth(curM,'_note'); save(); return; }
-  if (t.id === 'monIncome') {
-    monthObj(curM,true).income = t.value; touchMonth(curM,'income'); save();
-    refreshMonthFixed(); return;
-  }
   const row = t.closest('.row'); if (!row) return;
+  if (row.dataset.inc !== undefined) {
+    const o = monthObj(curM,true), i = +row.dataset.inc;
+    if (!Array.isArray(o.income)) o.income = incomeRows(curM);
+    while (o.income.length <= i) o.income.push({n:'',a:''});
+    o.income[i][t.classList.contains('in') ? 'n' : 'a'] = t.value;
+    touchMonth(curM,'income'); save(); refreshMonthFixed();
+    if (t.classList.contains('ia')) showCalcHint(t);
+    return;
+  }
   if (row.dataset.fix !== undefined) {
     const o = monthObj(curM,true), i = +row.dataset.fix;
     while (o.fixed.length <= i) o.fixed.push({n:'',a:''});
@@ -2227,9 +2326,8 @@ app.addEventListener('input', e => {
 
 /* ---- 金额栏算式：380+520 → 900 ---- */
 function isAmountInput(el){
-  if (!el) return false;
-  if (el.id === 'monIncome') return true;              // 本月总收入也能写算式
-  return !!(el.classList && (el.classList.contains('ra') || el.classList.contains('fa')));
+  if (!el || !el.classList) return false;
+  return el.classList.contains('ra') || el.classList.contains('fa') || el.classList.contains('ia');
 }
 /* 把输入框里的算式换成结果并写回数据 */
 function commitCalc(el){
@@ -2403,6 +2501,12 @@ app.addEventListener('keydown', e => {
     const sid = t.closest('.row').dataset.sid;
     const ni = addRow(ymd(cur), sid);
     renderDay(); focusRow(sid, ni);
+  } else if (t.classList.contains('in')) {   // 收入来源栏
+    const o = monthObj(curM, true);
+    if (!Array.isArray(o.income)) o.income = incomeRows(curM);
+    o.income.push({n:'',a:''}); touchMonth(curM,'income'); save(); renderMonth();
+    const el = document.querySelector('.inclist .row[data-inc="'+(o.income.length-1)+'"] .in');
+    if (el) el.focus();
   } else {                                 // .fn：月度固定支出
     const o = monthObj(curM, true);
     o.fixed.push({ n:'', a:'' }); touchMonth(curM,'fixed'); save(); renderMonth();
@@ -2414,8 +2518,8 @@ app.addEventListener('keydown', e => {
 /* 回车在哪一栏按下，该干什么 */
 function enterAction(el){
   if (!el || !el.classList) return 'none';
-  if (el.classList.contains('ra') || el.classList.contains('fa')) return 'calc';
-  if (el.classList.contains('rn') || el.classList.contains('fn')) return 'addrow';
+  if (el.classList.contains('ra') || el.classList.contains('fa') || el.classList.contains('ia')) return 'calc';
+  if (el.classList.contains('rn') || el.classList.contains('fn') || el.classList.contains('in')) return 'addrow';
   return 'none';
 }
 /* 算完闪一下，让人看见「确实算了」 */
@@ -2432,11 +2536,13 @@ function focusRow(sid, i){
 }
 function refreshMonthFixed(){
   const fixS = fixedSum(curM);
+  clearCarry();
   const varS = monthVar(curM), allI = monthAllIncome(curM);
   const a = document.getElementById('fixTotal'); if (a) a.textContent = yen(fixS);
   const b = document.getElementById('mTot');    if (b) b.textContent = yen(varS + fixS);
   const i = document.getElementById('mInc');    if (i) i.textContent = yen(allI);
-  const c = document.getElementById('mBal');    if (c) c.textContent = yen(allI - varS - fixS);
+  const it = document.getElementById('incTotal'); if (it) it.textContent = yen(monthSetIncome(curM));
+  const c = document.getElementById('mBal');    if (c) c.textContent = yen(monthLeft(curM));
 }
 
 /* 启动 */
@@ -2454,15 +2560,16 @@ render();
 })();
 
 /* 调试/测试接口 */
-window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v;}, save:saveNow, render, CATS, ALLSUBS,
+window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v; clearCarry();}, save:saveNow, render, CATS, ALLSUBS,
   monthSpend, monthIncome, monthVar, fixedSum, rangeSpend, rangeIncome, pct, weekStart, ymd,
   mergeDB, sig, emptyDB, dayScore, monScore, get SC(){return SC;},
   pendingCount, refreshStatus, configured, syncNow, LAN, GIST, pairCode, parsePair, canon,
+  ghErr,
   calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
   cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
   ALLQ, QGROUPS, yen, subLabel, renderQuery,
   budStat, spentIn, daysBetween, budList, newBudId, mergeBudRec,
-  monthSetIncome, monthAllIncome, monthLeft,
+  monthSetIncome, monthAllIncome, monthLeft, incomeRows, carryIn, clearCarry, nextMonth, monthKeys,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
 })();
