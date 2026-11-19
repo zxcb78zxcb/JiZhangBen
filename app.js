@@ -695,17 +695,27 @@ function spentIn(from, to, subs){
    结构：总预算 + 若干分项（每个分项绑定一些分类）+ 备用金（不绑分类，接收没归到分项的支出）*/
 function budItems(b){ return Array.isArray(b.items) ? b.items : []; }
 
+/* 这段时间的进账（记账里 11.收入 那项）。
+   只有「算全部支出」的预算才算——限定了分类的预算（比如「外食不超过 8000」），
+   把工资加进去毫无意义。 */
+function incomeIn(b){
+  if (b.subs && b.subs.length) return 0;
+  return rangeIncome(b.from, b.to);
+}
+
 function budStat(b){
   const today = ymd(new Date());
-  const limit = num(b.limit);
+  const limit = num(b.limit);                           // 设定的总预算
+  const income = incomeIn(b);                           // 这段时间多赚的
+  const avail = limit + income;                         // 实际可用 = 预算 + 进账
   const spent = spentIn(b.from, b.to, b.subs);          // 整个预算范围内的总花销
-  const remain = limit - spent;
+  const remain = avail - spent;
   const total = Math.max(1, daysBetween(b.from, b.to));
   let phase = 'on', passed, left;
   if (today < b.from)      { phase = 'before'; passed = 0;      left = total; }
   else if (today > b.to)   { phase = 'after';  passed = total;  left = 0; }
   else                     { passed = daysBetween(b.from, today); left = daysBetween(today, b.to); }
-  const shouldBy = limit * passed / total;              // 按时间推进「本该」花到这里
+  const shouldBy = avail * passed / total;              // 按时间推进「本该」花到这里
 
   /* ---- 分项 ---- */
   const raw = budItems(b);
@@ -718,13 +728,18 @@ function budStat(b){
   let catchUsed = false;
   const items = raw.map(it => {
     const isCatch = !(it.subs && it.subs.length);       // 没绑分类 = 备用金/意外
-    let sp;
-    if (isCatch) { sp = catchUsed ? 0 : other; catchUsed = true; }
-    else sp = spentIn(b.from, b.to, it.subs);
-    const lim = num(it.limit);
+    let sp, bonus = 0;
+    if (isCatch) {
+      sp    = catchUsed ? 0 : other;                    // 收走没归类的支出
+      bonus = catchUsed ? 0 : income;                   // 多赚的钱也进这里
+      catchUsed = true;
+    } else sp = spentIn(b.from, b.to, it.subs);
+    const limSet = num(it.limit);
+    const lim = limSet + bonus;                         // 备用金的实际额度 = 设定 + 进账
     return {
       name: it.name || (isCatch ? '备用金 / 意外' : '未命名'),
       subs: it.subs || [], isCatch: isCatch,
+      limitSet: limSet, bonus: bonus,
       limit: lim, spent: sp, remain: lim - sp, over: lim > 0 && sp > lim,
       pct: lim > 0 ? Math.min(100, sp / lim * 100) : (sp > 0 ? 100 : 0),
       pctReal: lim > 0 ? sp / lim * 100 : 0
@@ -733,18 +748,19 @@ function budStat(b){
   const allocated = items.reduce((t, it) => t + it.limit, 0);
 
   return {
-    limit: limit, spent: spent, remain: remain,
+    limit: limit, income: income, avail: avail,      // 预算 / 进账 / 可用合计
+    spent: spent, remain: remain,
     total: total, passed: passed, left: left, phase: phase,
-    pctSpent: limit > 0 ? Math.min(100, spent / limit * 100) : 0,   // 进度条用，封顶 100
-    pctReal:  limit > 0 ? spent / limit * 100 : 0,                  // 文字用，超了就显示真实值
+    pctSpent: avail > 0 ? Math.min(100, spent / avail * 100) : 0,   // 进度条用，封顶 100
+    pctReal:  avail > 0 ? spent / avail * 100 : 0,                  // 文字用，超了就显示真实值
     pctTime:  Math.min(100, passed / total * 100),
     perDayLeft: left > 0 ? remain / left : 0,        // 今天起每天还能花
-    perDayPlan: limit / total,
+    perDayPlan: avail / total,
     aheadBy: spent - shouldBy,                       // >0 = 花超前了
     over: remain < 0,
     items: items,
-    allocated: allocated,                            // 分项加起来分掉了多少
-    unallocated: limit - allocated,                  // 总预算还没分配的部分
+    allocated: allocated,                            // 分项加起来分掉了多少（含进账加成）
+    unallocated: avail - allocated,                  // 可用合计里还没分配的部分
     other: other,                                    // 没归到任何分项的支出
     hasCatch: catchUsed
   };
@@ -801,7 +817,8 @@ function budFormHTML(b){
   h += '<div style="font-weight:700;font-size:14px;margin-bottom:4px">分项预算（可不填）</div>';
   h += '<div class="hint" style="padding:0 0 8px">'
      + '把总预算拆开，比如「吃饭 6 万、娱乐 2 万、日用品 1 万」。<br>'
-     + '再加一个<b>不绑分类</b>的「备用金 / 意外」，<b>所有没归到分项的支出都会算在它头上</b>。</div>';
+     + '再加一个<b>不绑分类</b>的「备用金 / 意外」：'
+     + '<b>所有没归到分项的支出算在它头上，这段时间<span style="color:var(--blue)">多赚的钱也自动加进它的额度</span></b>。</div>';
 
   if (!items.length) h += '<div class="hint">还没有分项。点下面的按钮加。</div>';
 
@@ -876,7 +893,9 @@ function budCardHTML(b){
      + '<div class="budlb">'+(s.over ? '超支了' : '还能花')+'</div>'
      + '<div class="budbig">'+yen(Math.abs(s.remain))+'</div>'
      + '<div class="budsub">'+b.from.replace(/-/g,'/')+' ~ '+b.to.replace(/-/g,'/')
-     + '　共 '+s.total+' 天　预算 '+yen(s.limit)+'</div>'
+     + '　共 '+s.total+' 天　预算 '+yen(s.limit)
+     + (s.income ? '　＋进账 '+yen(s.income)+'　＝ 可用 '+yen(s.avail) : '')
+     + '</div>'
      + '</div>';
 
   h += '<div class="budbar"><span class="fill" style="width:'+s.pctSpent.toFixed(1)+'%"></span>'
@@ -884,6 +903,10 @@ function budCardHTML(b){
   h += '<div class="budlegend"><span>已花 '+yen(s.spent)+'（'+s.pctReal.toFixed(0)+'%）</span>'
      + '<span>时间过了 '+s.pctTime.toFixed(0)+'%</span></div>';
 
+  if (s.income) {
+    h += '<div class="kv"><span>这段时间进账</span><b style="color:var(--blue)">＋'+yen(s.income)+'</b></div>';
+    h += '<div class="kv"><span>可用合计（预算 ＋ 进账）</span><b>'+yen(s.avail)+'</b></div>';
+  }
   h += '<div class="kv"><span>今天起每天还能花</span><b'+(s.over?' style="color:var(--up)"':'')+'>'
      + (s.over ? '已超支' : (s.left > 0 ? yen(s.perDayLeft) : '—')) + '</b></div>';
   h += '<div class="kv"><span>原计划日均</span><b>'+yen(s.perDayPlan)+'</b></div>';
@@ -906,9 +929,16 @@ function budCardHTML(b){
       h += '<div class="bminibar"><span style="width:'+it.pct.toFixed(1)+'%"></span></div>';
       h += '<div class="brow-b"><span>'
          + (it.limit > 0 ? (it.over ? '超了 '+yen(it.spent-it.limit) : '还能花 '+yen(it.remain)) : '没设上限')
+         + (it.bonus ? '　<span style="color:var(--blue)">（'+yen(it.limitSet)+' ＋进账 '+yen(it.bonus)+'）</span>' : '')
          + '</span><span>'+(it.limit>0 ? it.pctReal.toFixed(0)+'%' : '')+'</span></div>';
       h += '</div>';
     });
+    if (s.income && !s.hasCatch) {
+      h += '<div class="brow nolimit"><div class="brow-t"><span>这段时间的进账</span>'
+         + '<b style="color:var(--blue)">＋'+yen(s.income)+'</b></div>'
+         + '<div class="brow-b"><span>加一个「备用金 / 意外」分项，多赚的钱就会自动归进去</span>'
+         + '<span></span></div></div>';
+    }
     if (!s.hasCatch && s.other > 0) {
       h += '<div class="brow nolimit"><div class="brow-t"><span>其它（没归到分项）</span>'
          + '<b>'+yen(s.other)+'</b></div>'
@@ -961,7 +991,9 @@ function renderBudget(){
 
   if (list.length) {
     h += '<div class="hint">预算只统计日常记的账，<b>不含月度固定支出</b>（房租、通信费这些按月走，'
-       + '摊到任意区间没意义）。</div>';
+       + '摊到任意区间没意义）。<br>'
+       + '记账里「11.收入」那项会算成<b>这段时间的进账</b>，自动加进备用金的额度；'
+       + '限定了分类的预算（比如「外食不超过 8000」）不算进账。</div>';
   }
 
   app.innerHTML = h;
@@ -2568,7 +2600,7 @@ window.__kakeibo = { get DB(){return DB;}, set DB(v){DB=v; clearCarry();}, save:
   calcExpr, commitCalc, num, migrateTax, DEFAULT_FIXED, enterAction, isTouch,
   cloudGap, warnItems, doExport, get lastErr(){return lastErr;}, set lastErr(v){lastErr=v;},
   ALLQ, QGROUPS, yen, subLabel, renderQuery,
-  budStat, spentIn, daysBetween, budList, newBudId, mergeBudRec,
+  budStat, spentIn, incomeIn, daysBetween, budList, newBudId, mergeBudRec,
   monthSetIncome, monthAllIncome, monthLeft, incomeRows, carryIn, clearCarry, nextMonth, monthKeys,
   go:function(v,d){ if(d){cur=parseYmd(d);curM=d.slice(0,7);curY=+d.slice(0,4);} view=v; render(); } };
 
