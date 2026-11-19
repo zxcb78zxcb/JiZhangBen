@@ -725,22 +725,49 @@ function budStat(b){
   const otherSubs = scope.filter(s => !taken[s]);
   const other = otherSubs.length ? spentIn(b.from, b.to, otherSubs) : 0;
 
+  const hasCatchItem = raw.some(it => !(it.subs && it.subs.length));
+
+  /* 先把绑了分类的分项算一遍，顺便记下超出预算的部分。
+     有备用金的话，超出部分就"挪"到备用金去花——
+     分项本身封顶显示，差额计到备用金头上，总数不会算重。 */
+  const overflows = [];
+  const pre = raw.map(it => {
+    const isCatch = !(it.subs && it.subs.length);
+    if (isCatch) return { isCatch:true };
+    const actual = spentIn(b.from, b.to, it.subs);
+    const limSet = num(it.limit);
+    let shown = actual, ovf = 0;
+    if (hasCatchItem && limSet > 0 && actual > limSet) {
+      shown = limSet;
+      ovf = actual - limSet;
+      overflows.push({ name: it.name || '未命名', amount: ovf });
+    }
+    return { isCatch:false, actual: actual, shown: shown, ovf: ovf };
+  });
+  const overflowTotal = overflows.reduce((t, o) => t + o.amount, 0);
+
   let catchUsed = false;
-  const items = raw.map(it => {
-    const isCatch = !(it.subs && it.subs.length);       // 没绑分类 = 备用金/意外
+  const items = raw.map((it, i) => {
+    const pc = pre[i];
+    const isCatch = pc.isCatch;                         // 没绑分类 = 备用金/意外
     let sp, bonus = 0;
     if (isCatch) {
-      sp    = catchUsed ? 0 : other;                    // 收走没归类的支出
+      sp    = catchUsed ? 0 : (other + overflowTotal);  // 没归类的支出 ＋ 各分项超出的部分
       bonus = catchUsed ? 0 : income;                   // 多赚的钱也进这里
       catchUsed = true;
-    } else sp = spentIn(b.from, b.to, it.subs);
+    } else sp = pc.shown;
     const limSet = num(it.limit);
     const lim = limSet + bonus;                         // 备用金的实际额度 = 设定 + 进账
     return {
       name: it.name || (isCatch ? '备用金 / 意外' : '未命名'),
       subs: it.subs || [], isCatch: isCatch,
       limitSet: limSet, bonus: bonus,
-      limit: lim, spent: sp, remain: lim - sp, over: lim > 0 && sp > lim,
+      limit: lim, spent: sp,
+      spentRaw: isCatch ? sp : pc.actual,               // 这个分项实际花了多少
+      overflow: isCatch ? 0 : pc.ovf,                   // 超出、已转给备用金的部分
+      fromOver: isCatch ? (catchUsed && sp ? overflowTotal : 0) : 0,
+      maxed: !isCatch && pc.ovf > 0,                    // 已用满并溢出
+      remain: lim - sp, over: lim > 0 && sp > lim,
       pct: lim > 0 ? Math.min(100, sp / lim * 100) : (sp > 0 ? 100 : 0),
       pctReal: lim > 0 ? sp / lim * 100 : 0
     };
@@ -762,7 +789,9 @@ function budStat(b){
     allocated: allocated,                            // 分项加起来分掉了多少（含进账加成）
     unallocated: avail - allocated,                  // 可用合计里还没分配的部分
     other: other,                                    // 没归到任何分项的支出
-    hasCatch: catchUsed
+    hasCatch: catchUsed,
+    overflows: overflows,                            // 哪些分项超了、超了多少
+    overflowTotal: overflowTotal                     // 一共从备用金挪了多少出去
   };
 }
 
@@ -922,17 +951,30 @@ function budCardHTML(b){
   if (s.items.length) {
     h += '<div class="bsplit"><div class="bsplit-h">分项</div>';
     s.items.forEach(it => {
-      h += '<div class="brow'+(it.over?' over':'')+'">';
+      h += '<div class="brow'+(it.over?' over':'')+(it.maxed?' maxed':'')+'">';
       h += '<div class="brow-t"><span>'+esc(it.name)
-         + (it.isCatch ? '<i class="btag">兜底</i>' : '') + '</span>'
+         + (it.isCatch ? '<i class="btag">兜底</i>' : '')
+         + (it.maxed ? '<i class="btag warn">已用满</i>' : '') + '</span>'
          + '<b>'+yen(it.spent)+' / '+yen(it.limit)+'</b></div>';
       h += '<div class="bminibar"><span style="width:'+it.pct.toFixed(1)+'%"></span></div>';
       h += '<div class="brow-b"><span>'
-         + (it.limit > 0 ? (it.over ? '超了 '+yen(it.spent-it.limit) : '还能花 '+yen(it.remain)) : '没设上限')
+         + (it.maxed
+              ? '超出 '+yen(it.overflow)+' 已从备用金出（实花 '+yen(it.spentRaw)+'）'
+              : (it.limit > 0 ? (it.over ? '超了 '+yen(it.spent-it.limit) : '还能花 '+yen(it.remain)) : '没设上限'))
          + (it.bonus ? '　<span style="color:var(--blue)">（'+yen(it.limitSet)+' ＋进账 '+yen(it.bonus)+'）</span>' : '')
+         + (it.isCatch && s.overflowTotal ? '　<span style="color:var(--up)">含转入 '+yen(s.overflowTotal)+'</span>' : '')
          + '</span><span>'+(it.limit>0 ? it.pctReal.toFixed(0)+'%' : '')+'</span></div>';
       h += '</div>';
     });
+
+    if (s.overflowTotal > 0) {
+      h += '<div class="bovf"><div class="bovf-h">↓ 这些分项超了预算，超出部分已从「备用金 / 意外」支出</div>';
+      s.overflows.forEach(o => {
+        h += '<div class="bovf-r"><span>'+esc(o.name)+'</span><b>超 '+yen(o.amount)+'</b></div>';
+      });
+      h += '<div class="bovf-r tot"><span>合计从备用金挪走</span><b>'+yen(s.overflowTotal)+'</b></div>';
+      h += '</div>';
+    }
     if (s.income && !s.hasCatch) {
       h += '<div class="brow nolimit"><div class="brow-t"><span>这段时间的进账</span>'
          + '<b style="color:var(--blue)">＋'+yen(s.income)+'</b></div>'

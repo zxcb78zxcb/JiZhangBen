@@ -338,6 +338,25 @@ td.zero{color:#c9c4b8;}
 .bminibar span{display:block;height:100%;background:var(--down);border-radius:4px;}
 .brow.over .bminibar span{background:var(--up);}
 .brow.nolimit .brow-t b{color:var(--up);}
+.brow.maxed .brow-t b{color:#8a6a16;}
+.brow.maxed .bminibar span{background:#d4a017;}
+.btag.warn{background:#f8ecc9;color:#8a6a16;}
+
+/* 超出预算、转到备用金的说明 */
+.bovf{
+  margin-top:8px;padding:9px 11px;border-radius:9px;
+  background:#fdf6ee;border:1px dashed #e0cfae;
+}
+.bovf-h{font-size:12px;font-weight:700;color:#8a6a16;margin-bottom:6px;}
+.bovf-r{
+  display:flex;justify-content:space-between;gap:8px;
+  font-size:12.5px;color:var(--ink-soft);padding:3px 0;
+}
+.bovf-r b{color:var(--up);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.bovf-r.tot{
+  border-top:1px solid #e8dcc2;margin-top:4px;padding-top:6px;
+  font-weight:700;color:var(--ink);
+}
 
 .budcard>h3{background:linear-gradient(180deg,#fbfaf7,#f4f1ea);}
 .budcard.over>h3{background:linear-gradient(180deg,#fdf3f2,#f9e6e3);color:var(--up);}
